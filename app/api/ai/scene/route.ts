@@ -4,22 +4,65 @@ import { NextRequest, NextResponse } from 'next/server';
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY;
 
 export async function POST(request: NextRequest) {
-  let sceneNumber = 1;
-  let prompt = 'cartoon scene';
-  
   try {
     const body = await request.json();
-    prompt = body.prompt || 'cartoon scene';
-    sceneNumber = body.sceneNumber || 1;
+    const {
+      prompt = 'cartoon scene',
+      sceneNumber = 1,
+      storyTitle,
+      storyGenre,
+      sceneTitle,
+      sceneLocation,
+      sceneAction,
+      sceneCharacters = [],
+      allCharacters = [],
+      storyContext
+    } = body;
 
-    // Generate scene description using a free text generation API
-    const sceneKeywords = prompt.toLowerCase().includes('forest') ? 'cartoon forest' :
-                         prompt.toLowerCase().includes('city') ? 'cartoon city' :
-                         prompt.toLowerCase().includes('beach') ? 'cartoon beach' :
-                         prompt.toLowerCase().includes('house') ? 'cartoon house interior' :
-                         'cartoon landscape';
+    // Build comprehensive scene description from story context
+    let sceneDescription = '';
+    if (sceneTitle && sceneLocation && sceneAction) {
+      sceneDescription = `Scene ${sceneNumber}: ${sceneTitle}\nLocation: ${sceneLocation}\nAction: ${sceneAction}`;
+      if (sceneCharacters.length > 0) {
+        sceneDescription += `\nCharacters: ${sceneCharacters.join(', ')}`;
+      }
+    } else {
+      sceneDescription = `Scene ${sceneNumber}: ${prompt.substring(0, 100)}`;
+    }
 
-    const sceneDescription = `Scene ${sceneNumber}: ${prompt.substring(0, 100)}...`;
+    // Build image search query from story context
+    let imageQuery = 'cartoon';
+    
+    if (sceneLocation) {
+      // Extract location keywords
+      const locationLower = sceneLocation.toLowerCase();
+      if (locationLower.includes('forest') || locationLower.includes('jungle') || locationLower.includes('woods')) {
+        imageQuery = 'cartoon forest magical';
+      } else if (locationLower.includes('castle') || locationLower.includes('palace') || locationLower.includes('kingdom')) {
+        imageQuery = 'cartoon castle fantasy';
+      } else if (locationLower.includes('beach') || locationLower.includes('ocean') || locationLower.includes('sea')) {
+        imageQuery = 'cartoon beach ocean';
+      } else if (locationLower.includes('city') || locationLower.includes('town') || locationLower.includes('village')) {
+        imageQuery = 'cartoon village town';
+      } else if (locationLower.includes('mountain') || locationLower.includes('hill')) {
+        imageQuery = 'cartoon mountain landscape';
+      } else if (locationLower.includes('cave') || locationLower.includes('tunnel')) {
+        imageQuery = 'cartoon cave adventure';
+      } else if (locationLower.includes('garden') || locationLower.includes('flower')) {
+        imageQuery = 'cartoon garden flowers';
+      } else {
+        // Use location directly
+        imageQuery = `cartoon ${sceneLocation}`;
+      }
+    } else if (storyGenre) {
+      imageQuery = `cartoon ${storyGenre}`;
+    }
+
+    // Add character context to image query if available
+    if (sceneCharacters.length > 0) {
+      const charNames = sceneCharacters.slice(0, 2).join(' ');
+      imageQuery += ` ${charNames}`;
+    }
 
     // Get background image from Unsplash (free tier)
     let backgroundUrl = '';
@@ -27,7 +70,7 @@ export async function POST(request: NextRequest) {
     if (UNSPLASH_ACCESS_KEY) {
       try {
         const unsplashResponse = await fetch(
-          `https://api.unsplash.com/photos/random?query=${encodeURIComponent(sceneKeywords)}&orientation=landscape`,
+          `https://api.unsplash.com/photos/random?query=${encodeURIComponent(imageQuery)}&orientation=landscape`,
           {
             headers: {
               'Authorization': `Client-ID ${UNSPLASH_ACCESS_KEY}`,
@@ -44,34 +87,32 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Fallback image sources (free APIs)
+    // Fallback: Use seed-based image that matches the scene
     if (!backgroundUrl) {
-      // Use Picsum for random images
-      const seed = Date.now() + sceneNumber;
+      // Create a seed from scene details for consistent images
+      const seedString = `${sceneNumber}-${sceneLocation || prompt}-${storyTitle || ''}`;
+      const seed = seedString.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
       backgroundUrl = `https://picsum.photos/seed/${seed}/800/600`;
     }
 
-    // Generate character suggestions
-    const characterSets = [
-      ['Benny the Bear', 'Rosie the Rabbit', 'Oliver the Owl'],
-      ['Max the Monkey', 'Lily the Lion', 'Toby the Turtle'],
-      ['Chloe the Cat', 'Danny the Dog', 'Polly the Parrot'],
-      ['Gary the Goat', 'Fiona the Fox', 'Henry the Hippo']
-    ];
-    
-    const randomSet = characterSets[sceneNumber % characterSets.length];
+    // Use characters from story context
+    const suggestedCharacters = sceneCharacters.length > 0 
+      ? sceneCharacters 
+      : (allCharacters.length > 0 
+          ? allCharacters.slice(0, 3).map((c: any) => c.name || c)
+          : ['Hero', 'Friend', 'Villain']);
 
     return NextResponse.json({
       description: sceneDescription,
       backgroundUrl: backgroundUrl,
-      suggestedCharacters: randomSet,
+      suggestedCharacters: suggestedCharacters,
     });
   } catch (error: any) {
     console.error('Scene generation error:', error);
     
     // Return mock data with preserved sceneNumber
     return NextResponse.json({
-      description: `Scene ${sceneNumber}: A beautiful cartoon scene`,
+      description: `Scene ${body.sceneNumber || 1}: A beautiful cartoon scene`,
       backgroundUrl: `https://picsum.photos/800/600?random=${Date.now()}`,
       suggestedCharacters: ['Hero', 'Sidekick', 'Villain'],
     });

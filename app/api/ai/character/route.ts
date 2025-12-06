@@ -1,34 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Free avatar generation using DiceBear API
+// Character image generation using DiceBear API with description-based seeding
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const characterName = body.characterName || 'Character';
     const description = body.description || '';
 
-    // Use DiceBear API for free avatars
-    const avatarStyles = [
-      'avataaars',  // Avatar style
-      'bottts',     // Robot style
-      'micah',      // Fun style
-      'miniavs',    // Mini avatars
-      'personas',   // Personas
-    ];
-
-    const randomStyle = avatarStyles[Math.floor(Math.random() * avatarStyles.length)];
+    // Use description to determine avatar style and seed
+    const descriptionLower = description.toLowerCase();
     
-    // Generate character description based on name
-    const characterTypes = ['heroic', 'funny', 'wise', 'playful', 'mysterious', 'friendly'];
-    const randomType = characterTypes[Math.floor(Math.random() * characterTypes.length)];
-    
-    const charDescription = description 
-      ? `${description.substring(0, 100)}...`
-      : `A ${randomType} cartoon character named ${characterName} who loves adventures`;
+    // Choose style based on description keywords
+    let avatarStyle = 'avataaars'; // default
+    if (descriptionLower.includes('robot') || descriptionLower.includes('cyborg')) {
+      avatarStyle = 'bottts';
+    } else if (descriptionLower.includes('animal') || descriptionLower.includes('bear') || descriptionLower.includes('rabbit')) {
+      avatarStyle = 'personas';
+    } else if (descriptionLower.includes('cute') || descriptionLower.includes('fun')) {
+      avatarStyle = 'micah';
+    } else if (descriptionLower.includes('mini') || descriptionLower.includes('small')) {
+      avatarStyle = 'miniavs';
+    }
 
-    // Generate avatar URL
-    const encodedName = encodeURIComponent(characterName);
-    const imageUrl = `https://api.dicebear.com/7.x/${randomStyle}/svg?seed=${encodedName}&backgroundColor=4f46e5`;
+    // Create a seed from name + description for consistent generation
+    const seed = `${characterName}-${description}`.substring(0, 50);
+    const encodedSeed = encodeURIComponent(seed);
+    
+    // Generate character description
+    const charDescription = description.trim() || `A cartoon character named ${characterName}`;
+
+    // Generate avatar URL with seed based on name and description
+    const imageUrl = `https://api.dicebear.com/7.x/${avatarStyle}/svg?seed=${encodedSeed}&backgroundColor=4f46e5&radius=50`;
 
     return NextResponse.json({
       name: characterName,

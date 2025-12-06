@@ -28,16 +28,45 @@ export default function PlayPage() {
   }, [projectId]);
 
   useEffect(() => {
+    // Load audio when scene changes
+    if (currentScene?.audio_url && audioRef.current) {
+      try {
+        // Check if audio_url is already a data URL or needs conversion
+        let audioData = currentScene.audio_url;
+        
+        // If it's not a data URL, assume it's base64 and add the prefix
+        if (!audioData.startsWith('data:')) {
+          audioData = `data:audio/wav;base64,${audioData}`;
+        }
+        
+        audioRef.current.src = audioData;
+        audioRef.current.load();
+      } catch (error) {
+        console.error('Error loading audio:', error);
+      }
+    }
+
     if (isPlaying) {
       startProgress();
+      // Play audio if scene has audio
+      if (currentScene?.audio_url && audioRef.current) {
+        audioRef.current.play().catch(err => console.log('Audio play error:', err));
+      }
     } else {
       stopProgress();
+      // Pause audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
     }
 
     return () => {
       stopProgress();
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
     };
-  }, [isPlaying, currentSceneIndex]);
+  }, [isPlaying, currentSceneIndex, currentScene]);
 
   const fetchProjectData = async () => {
     try {
@@ -233,14 +262,26 @@ export default function PlayPage() {
                 >
                   <div className="relative">
                     {/* Character avatar */}
-                    <div className="h-40 w-32 bg-gradient-to-r from-blue-400 to-purple-400 rounded-xl shadow-2xl" />
+                    <div 
+                      className="h-40 w-32 rounded-xl shadow-2xl border-2 border-white/20"
+                      style={{
+                        backgroundImage: sceneChar.characters?.image_url 
+                          ? `url(${sceneChar.characters.image_url})`
+                          : 'linear-gradient(to bottom right, #60a5fa, #a78bfa)',
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center'
+                      }}
+                    />
                     {/* Character name */}
                     <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 bg-black/70 px-3 py-1 rounded-lg whitespace-nowrap">
-                      <span className="font-bold">{sceneChar.characters?.name}</span>
+                      <span className="font-bold">{sceneChar.characters?.name || 'Character'}</span>
                     </div>
                   </div>
                 </div>
               ))}
+
+              {/* Hidden audio element for scene audio */}
+              <audio ref={audioRef} />
 
               {/* Scene Description */}
               <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-black/70 backdrop-blur-sm px-6 py-3 rounded-xl max-w-2xl w-full">

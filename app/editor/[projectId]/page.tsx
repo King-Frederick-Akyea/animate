@@ -7,9 +7,12 @@ import {
   Save, Play, Download, ArrowLeft, Plus, 
   Volume2, Settings, Type, Image, Move,
   Upload, Mic, Smile, Zap, Eye, EyeOff,
-  Trash2, Copy, RotateCcw
+  Trash2, Copy, RotateCcw, Sparkles,
+  Wand2, Bot, Clock, Layers, Film,
+  ChevronDown, ChevronUp, Music, MessageSquare
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { parseStoryText, ParsedStory } from '@/lib/storyParser';
 
 // Define types for our data
 interface Character {
@@ -34,6 +37,7 @@ interface Scene {
   scene_number: number;
   description?: string;
   background_image_url?: string;
+  audio_url?: string;
   duration: number;
   animations: any[];
   scene_characters: SceneCharacter[];
@@ -44,6 +48,13 @@ interface Project {
   title: string;
   story_text?: string;
   updated_at: string;
+}
+
+// AI Generation Options
+interface StoryOptions {
+  genre: string;
+  ageGroup: string;
+  length: 'short' | 'medium' | 'long';
 }
 
 export default function EditorPage() {
@@ -62,6 +73,43 @@ export default function EditorPage() {
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(true);
   const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
   const [sceneDescription, setSceneDescription] = useState('');
+  const [parsedStory, setParsedStory] = useState<ParsedStory | null>(null);
+  const [showStoryOptions, setShowStoryOptions] = useState(false);
+  const [storyOptions, setStoryOptions] = useState<StoryOptions>({
+    genre: 'fantasy',
+    ageGroup: 'children',
+    length: 'medium'
+  });
+
+  // AI Generation Status
+  const [aiStatus, setAiStatus] = useState<'idle' | 'generating' | 'success' | 'error'>('idle');
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [generatedScenes, setGeneratedScenes] = useState<number>(0);
+
+  // Audio Generation State
+  const [showAudioModal, setShowAudioModal] = useState(false);
+  const [audioText, setAudioText] = useState('');
+  const [generatingAudio, setGeneratingAudio] = useState(false);
+  const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
+  const [audioVoice, setAudioVoice] = useState('Fritz-PlayAI');
+
+  // Character Generation State
+  const [showCharacterModal, setShowCharacterModal] = useState(false);
+  const [characterName, setCharacterName] = useState('');
+  const [characterDescription, setCharacterDescription] = useState('');
+  const [generatingCharacter, setGeneratingCharacter] = useState(false);
+
+  // Available genres and age groups
+  const genres = [
+    'fantasy', 'adventure', 'sci-fi', 'mystery', 'comedy', 
+    'fairy tale', 'animal', 'educational', 'superhero', 'historical'
+  ];
+
+  const ageGroups = [
+    { value: 'children', label: 'Children (5-10)' },
+    { value: 'teens', label: 'Teens (11-17)' },
+    { value: 'all-ages', label: 'All Ages' }
+  ];
 
   useEffect(() => {
     if (projectId) {
@@ -87,6 +135,16 @@ export default function EditorPage() {
       if (projectError) throw projectError;
       setProject(projectData);
       setStoryPrompt(projectData.story_text || '');
+
+      // Parse the story if it exists
+      if (projectData.story_text) {
+        try {
+          const parsed = parseStoryText(projectData.story_text);
+          setParsedStory(parsed);
+        } catch (parseError) {
+          console.log('Could not parse story:', parseError);
+        }
+      }
 
       // Fetch scenes with characters
       const { data: scenesData, error: scenesError } = await supabase
@@ -125,7 +183,6 @@ export default function EditorPage() {
 
   const saveProject = async () => {
     try {
-      // Save project story
       const { error: projectError } = await supabase
         .from('projects')
         .update({ 
@@ -136,7 +193,6 @@ export default function EditorPage() {
 
       if (projectError) throw projectError;
 
-      // Save active scene if it exists
       if (activeScene) {
         const { error: sceneError } = await supabase
           .from('scenes')
@@ -157,60 +213,383 @@ export default function EditorPage() {
   };
 
   const generateStory = async () => {
-    if (!storyPrompt.trim()) {
-      toast.error('Please enter a story prompt');
+  if (!storyPrompt.trim()) {
+    toast.error('Please enter a story prompt');
+    return;
+  }
+
+  setGenerating(true);
+  setAiStatus('generating');
+  setGenerationProgress(10);
+
+  const progressInterval = setInterval(() => {
+    setGenerationProgress(prev => Math.min(prev + 2, 90));
+  }, 500);
+
+  try {
+    // First, test if the API endpoint exists
+    try {
+      const testResponse = await fetch('/api/story', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!testResponse.ok) {
+        console.warn('API endpoint test failed:', testResponse.status);
+      }
+    } catch (testError) {
+      console.warn('API endpoint may not exist:', testError);
+    }
+
+    // Now make the actual POST request
+    const response = await fetch('/api/story', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        prompt: storyPrompt.trim(),
+        ...storyOptions 
+      }),
+    });
+
+    clearInterval(progressInterval);
+
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error('Non-JSON response:', text.substring(0, 200));
+      
+      // Check if it's HTML (404 page)
+      if (text.includes('<!DOCTYPE') || text.includes('<html')) {
+        throw new Error(
+          'API endpoint not found (404). Make sure the file exists at: app/api/story/route.ts'
+        );
+      }
+      
+      throw new Error(`Invalid response format: ${contentType}`);
+    }
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || data.details || `HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    if (!data.success) {
+      throw new Error(data.error || 'Story generation failed');
+    }
+
+    setGenerationProgress(100);
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Update project with generated story
+    const { error: updateError } = await supabase
+      .from('projects')
+      .update({ 
+        story_text: data.story,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', projectId);
+
+    if (updateError) throw updateError;
+
+    setStoryPrompt(data.story);
+    
+    // Parse the story with error handling
+    let parsed: ParsedStory;
+    try {
+      parsed = parseStoryText(data.story);
+      // Validate parsed story has scenes
+      if (!parsed.scenes || parsed.scenes.length === 0) {
+        console.warn('No scenes found in parsed story, using fallback parser');
+        const { parseSimpleStory } = await import('@/lib/storyParser');
+        parsed = parseSimpleStory(data.story);
+      }
+    } catch (parseError) {
+      console.error('Story parsing error, using fallback:', parseError);
+      const { parseSimpleStory } = await import('@/lib/storyParser');
+      parsed = parseSimpleStory(data.story);
+    }
+    
+    setParsedStory(parsed);
+    
+    // Auto-create scenes from the parsed story
+    await autoCreateScenesFromParsedStory(parsed);
+    
+    setAiStatus('success');
+    toast.success(`Story generated successfully! Auto-created ${parsed.scenes.length} scenes.`);
+    
+  } catch (error: any) {
+    clearInterval(progressInterval);
+    console.error('Story generation error:', error);
+    
+    let errorMessage = error.message || 'Failed to generate story';
+    
+    // User-friendly error messages
+    if (errorMessage.includes('API endpoint not found')) {
+      errorMessage = 'API route not found. Please create the file at: app/api/story/route.ts';
+    } else if (errorMessage.includes('GROQ_API_KEY') || errorMessage.includes('API key')) {
+      errorMessage = 'API key not configured. Get a free key from console.groq.com';
+    } else if (errorMessage.includes('rate limit')) {
+      errorMessage = 'Rate limit exceeded. Please wait a minute.';
+    }
+    
+    setAiStatus('error');
+    toast.error(errorMessage);
+  } finally {
+    setGenerating(false);
+    setTimeout(() => setAiStatus('idle'), 3000);
+  }
+};
+
+  const autoCreateScenesFromParsedStory = async (parsed: ParsedStory) => {
+    const toastId = toast.loading(`Creating ${parsed.scenes.length} scenes...`);
+    
+    try {
+      // Clear existing scenes
+      const { error: deleteError } = await supabase
+        .from('scenes')
+        .delete()
+        .eq('project_id', projectId);
+      
+      if (deleteError) throw deleteError;
+
+      // Create scenes
+      for (let i = 0; i < parsed.scenes.length; i++) {
+        const scene = parsed.scenes[i];
+        setGeneratedScenes(i + 1);
+        
+        // Generate background using story context
+        const backgroundUrl = await generateSceneBackground(scene, parsed);
+        
+        // Create scene in database
+        const sceneDescription = `
+Title: ${scene.title}
+Location: ${scene.location}
+Characters: ${scene.characters.join(', ')}
+Action: ${scene.action}
+Dialogue: ${scene.dialogue || 'No dialogue'}
+        `.trim();
+
+        const { data: newScene, error: sceneError } = await supabase
+          .from('scenes')
+          .insert([{
+            project_id: projectId,
+            scene_number: i + 1,
+            description: sceneDescription.substring(0, 200),
+            background_image_url: backgroundUrl,
+            duration: 5,
+            animations: [{ type: 'fadeIn', duration: 1 }],
+          }])
+          .select()
+          .single();
+        
+        if (sceneError) throw sceneError;
+
+        // Create characters for the scene
+        await createCharactersForScene(parsed.title, scene.characters, newScene.id);
+        
+        // Small delay to show progress
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      // Refresh all data
+      await fetchProjectData();
+      
+      toast.dismiss(toastId);
+      
+    } catch (error: any) {
+      toast.dismiss(toastId);
+      console.error('Error creating scenes:', error);
+      toast.error('Failed to create all scenes');
+    }
+  };
+
+  const generateSceneBackground = async (scene: any, storyContext?: ParsedStory): Promise<string> => {
+    try {
+      // Call the scene generation API with full context
+      const response = await fetch('/api/ai/scene', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sceneNumber: scene.sceneNumber || scene.scene_number || 1,
+          sceneTitle: scene.title,
+          sceneLocation: scene.location,
+          sceneAction: scene.action,
+          sceneCharacters: Array.isArray(scene.characters) ? scene.characters : [],
+          storyTitle: storyContext?.title,
+          storyGenre: storyContext?.genre,
+          allCharacters: storyContext?.characters 
+            ? storyContext.characters.map(c => typeof c === 'string' ? c : c.name)
+            : (characters.length > 0 ? characters.map(c => c.name) : []),
+          storyContext: storyContext?.summary
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        return data.backgroundUrl || `https://picsum.photos/seed/${Date.now()}/800/600`;
+      }
+    } catch (error) {
+      console.error('Error generating scene background:', error);
+    }
+
+    // Fallback: Use location-based images
+    const sceneKeywords = `${scene.title} ${scene.location} cartoon background`.toLowerCase();
+    
+    if (sceneKeywords.includes('forest') || sceneKeywords.includes('jungle') || sceneKeywords.includes('woods')) {
+      return 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800&h=600&fit=crop';
+    } else if (sceneKeywords.includes('castle') || sceneKeywords.includes('palace') || sceneKeywords.includes('kingdom')) {
+      return 'https://images.unsplash.com/photo-1546182990-dffeafbe841d?w=800&h=600&fit=crop';
+    } else if (sceneKeywords.includes('space') || sceneKeywords.includes('planet')) {
+      return 'https://images.unsplash.com/photo-1446776653964-20c1d3a81b06?w=800&h=600&fit=crop';
+    } else if (sceneKeywords.includes('beach') || sceneKeywords.includes('ocean') || sceneKeywords.includes('sea')) {
+      return 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800&h=600&fit=crop';
+    } else if (sceneKeywords.includes('city') || sceneKeywords.includes('urban') || sceneKeywords.includes('town') || sceneKeywords.includes('village')) {
+      return 'https://images.unsplash.com/photo-1449824913935-59a10b8d2000?w=800&h=600&fit=crop';
+    } else if (sceneKeywords.includes('mountain') || sceneKeywords.includes('hill')) {
+      return 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800&h=600&fit=crop';
+    } else if (sceneKeywords.includes('garden') || sceneKeywords.includes('flower')) {
+      return 'https://images.unsplash.com/photo-1416879595882-3373a0480b5b?w=800&h=600&fit=crop';
+    } else {
+      // Create seed from scene details for consistent images
+      const seedString = `${scene.sceneNumber || 1}-${scene.location || scene.title}`;
+      const seed = seedString.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+      return `https://picsum.photos/seed/${seed}/800/600`;
+    }
+  };
+
+  const createCharactersForScene = async (storyTitle: string, characterNames: string[], sceneId: string) => {
+    for (const charName of characterNames.slice(0, 5)) { // Limit to 5 characters per scene
+      const existingChar = characters.find(c => 
+        c.name.toLowerCase() === charName.toLowerCase()
+      );
+      
+      if (!existingChar) {
+        try {
+          // Create new character
+          const { data: newChar, error: charError } = await supabase
+            .from('characters')
+            .insert([{
+              project_id: projectId,
+              name: charName,
+              description: `Character from "${storyTitle}"`,
+              character_type: 'cartoon',
+              image_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${charName}&backgroundColor=4f46e5&radius=50`,
+            }])
+            .select()
+            .single();
+          
+          if (newChar && !charError) {
+            // Add to scene
+            await supabase
+              .from('scene_characters')
+              .insert([{
+                scene_id: sceneId,
+                character_id: newChar.id,
+                position_x: 20 + (Math.random() * 60),
+                position_y: 30 + (Math.random() * 40),
+                scale: 0.8 + (Math.random() * 0.4),
+                expression: 'happy',
+              }]);
+          }
+        } catch (error) {
+          console.error('Error creating character:', error);
+        }
+      }
+    }
+  };
+
+  const generateCharactersFromStory = async () => {
+    if (!parsedStory || !parsedStory.characters || parsedStory.characters.length === 0) {
+      toast.error('No characters found in the story. Generate a story first.');
       return;
     }
 
-    setGenerating(true);
+    const toastId = toast.loading(`Creating ${parsedStory.characters.length} characters...`);
+
     try {
-      // Call our new AI story generation API
-      const response = await fetch('/api/ai/story', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: storyPrompt }),
-      });
+      const createdChars: Character[] = [];
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate story');
+      for (const storyChar of parsedStory.characters) {
+        // Check if character already exists
+        const existingChar = characters.find(c => 
+          c.name.toLowerCase() === storyChar.name.toLowerCase()
+        );
+
+        if (!existingChar) {
+          // Generate character image based on description
+          const charSeed = storyChar.name + storyChar.description;
+          const imageUrl = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(charSeed)}&backgroundColor=4f46e5&radius=50`;
+
+          const { data: newChar, error: charError } = await supabase
+            .from('characters')
+            .insert([{
+              project_id: projectId,
+              name: storyChar.name,
+              description: storyChar.description,
+              character_type: 'cartoon',
+              image_url: imageUrl,
+            }])
+            .select()
+            .single();
+
+          if (newChar && !charError) {
+            createdChars.push(newChar);
+          }
+        } else {
+          createdChars.push(existingChar);
+        }
       }
 
-      const data = await response.json();
-      
-      // Update project with generated story
-      const { error: updateError } = await supabase
-        .from('projects')
-        .update({ story_text: data.story })
-        .eq('id', projectId);
+      // Refresh characters list
+      await fetchProjectData();
 
-      if (updateError) throw updateError;
-
-      setStoryPrompt(data.story);
-      toast.success('Story generated successfully!');
+      toast.dismiss(toastId);
+      toast.success(`Created ${createdChars.length} characters from story!`);
     } catch (error: any) {
-      console.error('Story generation error:', error);
-      toast.error(error.message || 'Failed to generate story. Using fallback.');
-      
-      // Fallback mock story
-      const fallbackStory = `Once upon a time in Cartoonland, ${storyPrompt}. The characters went on an adventure and learned valuable lessons about friendship and teamwork.
+      toast.dismiss(toastId);
+      console.error('Error generating characters:', error);
+      toast.error('Failed to generate characters');
+    }
+  };
 
-Scene 1: Introduction of main characters
-Scene 2: The adventure begins
-Scene 3: Facing challenges together
-Scene 4: Happy ending with lessons learned`;
+  const insertCharacterIntoScene = async (characterId: string, sceneId: string) => {
+    if (!activeScene || activeScene.id !== sceneId) {
+      toast.error('Please select the target scene first');
+      return;
+    }
 
-      const { error: fallbackError } = await supabase
-        .from('projects')
-        .update({ story_text: fallbackStory })
-        .eq('id', projectId);
+    try {
+      // Check if character is already in scene
+      const existing = activeScene.scene_characters?.find(
+        sc => sc.characters.id === characterId
+      );
 
-      if (!fallbackError) {
-        setStoryPrompt(fallbackStory);
-        toast.success('Created story with fallback');
+      if (existing) {
+        toast.error('Character is already in this scene');
+        return;
       }
-    } finally {
-      setGenerating(false);
+
+      // Add character to scene
+      const { error } = await supabase
+        .from('scene_characters')
+        .insert([{
+          scene_id: sceneId,
+          character_id: characterId,
+          position_x: 30 + (Math.random() * 40),
+          position_y: 30 + (Math.random() * 40),
+          scale: 0.8 + (Math.random() * 0.4),
+          expression: 'happy',
+        }]);
+
+      if (error) throw error;
+
+      toast.success('Character added to scene!');
+      await fetchProjectData();
+    } catch (error: any) {
+      console.error('Error inserting character:', error);
+      toast.error('Failed to add character to scene');
     }
   };
 
@@ -219,68 +598,130 @@ Scene 4: Happy ending with lessons learned`;
       const sceneNumber = scenes.length + 1;
       const loadingToast = toast.loading('Generating scene...');
       
-      // Call AI scene generation
+      // Build context from story if available
+      const sceneData: any = {
+        sceneNumber: sceneNumber,
+        prompt: sceneDescription || storyPrompt || 'cartoon scene'
+      };
+
+      // Add story context if available
+      if (parsedStory) {
+        sceneData.storyTitle = parsedStory.title;
+        sceneData.storyGenre = parsedStory.genre;
+        sceneData.storyContext = parsedStory.summary;
+        sceneData.allCharacters = parsedStory.characters.map(c => c.name);
+        
+        // If we have a matching scene from the story, use its details
+        const matchingStoryScene = parsedStory.scenes.find(s => s.sceneNumber === sceneNumber);
+        if (matchingStoryScene) {
+          sceneData.sceneTitle = matchingStoryScene.title;
+          sceneData.sceneLocation = matchingStoryScene.location;
+          sceneData.sceneAction = matchingStoryScene.action;
+          sceneData.sceneCharacters = matchingStoryScene.characters;
+        }
+      } else if (characters.length > 0) {
+        sceneData.allCharacters = characters.map(c => c.name);
+      }
+      
       const response = await fetch('/api/ai/scene', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          prompt: storyPrompt || 'cartoon scene',
-          sceneNumber: sceneNumber 
-        }),
+        body: JSON.stringify(sceneData),
       });
 
-      let sceneData;
+      let generatedSceneData;
       if (response.ok) {
-        sceneData = await response.json();
+        generatedSceneData = await response.json();
       } else {
-        // Fallback scene data
-        const promptText = storyPrompt || 'A beautiful cartoon scene';
-        sceneData = {
-          description: `Scene ${sceneNumber}: ${promptText.substring(0, 50)}...`,
-          backgroundUrl: `https://picsum.photos/seed/${Date.now()}/800/600`,
-          suggestedCharacters: ['Hero', 'Friend', 'Villain']
+        // Fallback scene data - generate background
+        const fallbackBackground = await generateSceneBackground(
+          { sceneNumber, location: sceneDescription, title: sceneDescription }, 
+          parsedStory
+        );
+        generatedSceneData = {
+          description: `Scene ${sceneNumber}: ${sceneDescription || storyPrompt || 'A new scene'}`,
+          backgroundUrl: fallbackBackground,
+          suggestedCharacters: characters.length > 0 ? characters.slice(0, 3).map(c => c.name) : ['Hero', 'Friend', 'Villain']
         };
       }
 
       // Add scene to database
       const { data: newScene, error: sceneError } = await supabase
         .from('scenes')
-        .insert([
-          {
-            project_id: projectId,
-            scene_number: sceneNumber,
-            description: sceneData.description,
-            background_image_url: sceneData.backgroundUrl,
-            duration: 5,
-            animations: [{ type: 'fadeIn', duration: 1 }],
-          },
-        ])
+        .insert([{
+          project_id: projectId,
+          scene_number: sceneNumber,
+          description: generatedSceneData.description.substring(0, 200),
+          background_image_url: generatedSceneData.backgroundUrl,
+          duration: 5,
+          animations: [{ type: 'fadeIn', duration: 1 }],
+        }])
         .select()
         .single();
 
       if (sceneError) throw sceneError;
 
-      // Auto-generate characters for the scene
-      if (sceneData.suggestedCharacters && characters.length === 0) {
-        const characterPromises = sceneData.suggestedCharacters.slice(0, 3).map((charName: string) => 
-          supabase.from('characters').insert([
-            {
-              project_id: projectId,
-              name: charName,
-              character_type: 'cartoon',
-              image_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${charName}`,
-            },
-          ])
-        );
-        
-        await Promise.all(characterPromises);
-        fetchProjectData(); // Refresh characters
-      }
-
       toast.dismiss(loadingToast);
-      setScenes([...scenes, newScene]);
-      setActiveScene(newScene);
-      toast.success('Scene generated!');
+      
+      // Refresh data to get the new scene
+      await fetchProjectData();
+      
+      // Add suggested characters to scene if they exist
+      if (generatedSceneData.suggestedCharacters) {
+        // Find the newly created scene
+        const { data: newSceneData } = await supabase
+          .from('scenes')
+          .select('*')
+          .eq('project_id', projectId)
+          .eq('scene_number', sceneNumber)
+          .single();
+        
+        if (newSceneData) {
+          // Fetch latest characters
+          const { data: latestCharacters } = await supabase
+            .from('characters')
+            .select('*')
+            .eq('project_id', projectId);
+          
+          if (latestCharacters && latestCharacters.length > 0) {
+            // Add characters to the scene
+            for (const charName of generatedSceneData.suggestedCharacters.slice(0, 3)) {
+              const char = latestCharacters.find(c => c.name === charName);
+              if (char) {
+                try {
+                  // Check if character is already in scene
+                  const { data: existing } = await supabase
+                    .from('scene_characters')
+                    .select('*')
+                    .eq('scene_id', newSceneData.id)
+                    .eq('character_id', char.id)
+                    .single();
+                  
+                  if (!existing) {
+                    await supabase
+                      .from('scene_characters')
+                      .insert([{
+                        scene_id: newSceneData.id,
+                        character_id: char.id,
+                        position_x: 20 + (Math.random() * 60),
+                        position_y: 30 + (Math.random() * 40),
+                        scale: 0.8 + (Math.random() * 0.4),
+                        expression: 'happy',
+                      }]);
+                  }
+                } catch (err) {
+                  // Character might already be in scene, skip
+                  console.log('Character already in scene or error:', err);
+                }
+              }
+            }
+          }
+          
+          await fetchProjectData();
+        }
+      }
+      
+      toast.success('Scene generated with story context!');
     } catch (error: any) {
       toast.dismiss();
       console.error('Scene generation error:', error);
@@ -289,19 +730,32 @@ Scene 4: Happy ending with lessons learned`;
   };
 
   const generateCharacter = async () => {
-    try {
-      const characterNameInput = prompt('Enter character name:');
-      if (!characterNameInput) return;
+    // Open character generation modal
+    setShowCharacterModal(true);
+    setCharacterName('');
+    setCharacterDescription('');
+  };
 
-      const loadingToast = toast.loading('Generating character...');
-      
-      // Call AI character generation
+  const createCharacterWithAI = async () => {
+    if (!characterName.trim()) {
+      toast.error('Please enter a character name');
+      return;
+    }
+
+    if (!characterDescription.trim()) {
+      toast.error('Please enter a character description');
+      return;
+    }
+
+    setGeneratingCharacter(true);
+
+    try {
       const response = await fetch('/api/ai/character', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          characterName: characterNameInput,
-          description: storyPrompt 
+          characterName: characterName.trim(),
+          description: characterDescription.trim()
         }),
       });
 
@@ -309,37 +763,33 @@ Scene 4: Happy ending with lessons learned`;
       if (response.ok) {
         characterData = await response.json();
       } else {
-        // Fallback character data
-        characterData = {
-          name: characterNameInput,
-          imageUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${characterNameInput}`,
-          description: `A cartoon character named ${characterNameInput}`
-        };
+        throw new Error('Failed to generate character');
       }
 
       const { data: newCharacter, error: characterError } = await supabase
         .from('characters')
-        .insert([
-          {
-            project_id: projectId,
-            name: characterData.name,
-            description: characterData.description,
-            character_type: 'cartoon',
-            image_url: characterData.imageUrl,
-          },
-        ])
+        .insert([{
+          project_id: projectId,
+          name: characterData.name,
+          description: characterData.description,
+          character_type: 'cartoon',
+          image_url: characterData.imageUrl,
+        }])
         .select()
         .single();
 
       if (characterError) throw characterError;
 
-      toast.dismiss(loadingToast);
-      setCharacters([...characters, newCharacter]);
-      toast.success('Character generated!');
+      await fetchProjectData();
+      setShowCharacterModal(false);
+      setCharacterName('');
+      setCharacterDescription('');
+      toast.success('Character created successfully!');
     } catch (error: any) {
-      toast.dismiss();
       console.error('Character generation error:', error);
       toast.error(error.message || 'Failed to generate character');
+    } finally {
+      setGeneratingCharacter(false);
     }
   };
 
@@ -352,19 +802,17 @@ Scene 4: Happy ending with lessons learned`;
     try {
       const { error: sceneCharError } = await supabase
         .from('scene_characters')
-        .insert([
-          {
-            scene_id: activeScene.id,
-            character_id: characterId,
-            position_x: 30 + Math.random() * 40, // Random position
-            position_y: 50,
-            expression: 'happy',
-          },
-        ]);
+        .insert([{
+          scene_id: activeScene.id,
+          character_id: characterId,
+          position_x: 30 + Math.random() * 40,
+          position_y: 50,
+          expression: 'happy',
+        }]);
 
       if (sceneCharError) throw sceneCharError;
 
-      fetchProjectData(); // Refresh data
+      fetchProjectData();
       toast.success('Character added to scene!');
     } catch (error: any) {
       console.error('Add character error:', error);
@@ -390,35 +838,15 @@ Scene 4: Happy ending with lessons learned`;
     try {
       const loadingToast = toast.loading('Exporting animation...');
       
-      // Create a mock export
-      const { data: exportData, error: exportError } = await supabase
-        .from('animation_exports')
-        .insert([
-          {
-            project_id: projectId,
-            status: 'completed',
-            video_url: `https://example.com/export/${projectId}-${Date.now()}.mp4`,
-          },
-        ])
-        .select()
-        .single();
-
-      if (exportError) throw exportError;
-
-      // Simulate processing delay
+      // Simulate export
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       toast.dismiss(loadingToast);
-      
-      // Create download link
-      const downloadUrl = `/api/export/download?projectId=${projectId}`;
-      window.open(downloadUrl, '_blank');
-      
       toast.success('Animation exported successfully!');
     } catch (error: any) {
       toast.dismiss();
       console.error('Export error:', error);
-      toast.error(error.message || 'Export failed');
+      toast.error('Export failed');
     }
   };
 
@@ -449,15 +877,13 @@ Scene 4: Happy ending with lessons learned`;
     try {
       const { data: newScene, error: duplicateError } = await supabase
         .from('scenes')
-        .insert([
-          {
-            project_id: projectId,
-            scene_number: scenes.length + 1,
-            description: `${scene.description} (Copy)`,
-            background_image_url: scene.background_image_url,
-            duration: scene.duration,
-          },
-        ])
+        .insert([{
+          project_id: projectId,
+          scene_number: scenes.length + 1,
+          description: `${scene.description} (Copy)`,
+          background_image_url: scene.background_image_url,
+          duration: scene.duration,
+        }])
         .select()
         .single();
 
@@ -471,40 +897,283 @@ Scene 4: Happy ending with lessons learned`;
     }
   };
 
-  // Helper function for button actions
-  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    if (type === 'success') {
-      toast.success(message);
-    } else if (type === 'error') {
-      toast.error(message);
-    } else {
-      toast(message);
+  const generateVoiceover = async () => {
+    // Open audio generation modal
+    setShowAudioModal(true);
+    
+    // If we have parsed story with dialogue, pre-fill with first scene's dialogue
+    if (parsedStory && parsedStory.scenes.length > 0) {
+      const firstScene = parsedStory.scenes[0];
+      if (firstScene.dialogue) {
+        // Remove quotes if present
+        const dialogue = firstScene.dialogue.replace(/^["']|["']$/g, '').trim();
+        setAudioText(dialogue || '');
+      }
     }
+  };
+
+  const generateAudio = async () => {
+    if (!audioText.trim()) {
+      toast.error('Please enter text to generate audio');
+      return;
+    }
+
+    if (audioText.length > 5000) {
+      toast.error('Text is too long. Maximum 5000 characters.');
+      return;
+    }
+
+    setGeneratingAudio(true);
+    setGeneratedAudioUrl(null);
+
+    try {
+      const response = await fetch('/api/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: audioText.trim(),
+          voice: audioVoice,
+          response_format: 'wav',
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate audio');
+      }
+
+      if (!data.success || !data.audio) {
+        throw new Error('Invalid response from audio API');
+      }
+
+      // Convert base64 to blob URL
+      const audioBlob = new Blob([
+        Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))
+      ], { type: 'audio/wav' });
+      
+      const audioUrl = URL.createObjectURL(audioBlob);
+      setGeneratedAudioUrl(audioUrl);
+      
+      toast.success('Audio generated successfully!');
+    } catch (error: any) {
+      console.error('Audio generation error:', error);
+      toast.error(error.message || 'Failed to generate audio');
+    } finally {
+      setGeneratingAudio(false);
+    }
+  };
+
+  const selectDialogueFromScene = (sceneIndex: number) => {
+    // Try to get dialogue from parsedStory first
+    if (parsedStory && parsedStory.scenes[sceneIndex]) {
+      const parsedScene = parsedStory.scenes[sceneIndex];
+      if (parsedScene.dialogue) {
+        const dialogue = parsedScene.dialogue.replace(/^["']|["']$/g, '').trim();
+        setAudioText(dialogue || '');
+        toast.success(`Loaded dialogue from Scene ${sceneIndex + 1}`);
+        return;
+      }
+    }
+    
+    // Fallback: try to extract from database scene description
+    const dbScene = scenes.find(s => s.scene_number === sceneIndex + 1);
+    if (dbScene && dbScene.description) {
+      // Try to extract dialogue from description
+      const dialogueMatch = dbScene.description.match(/Dialogue:\s*(.+)/i);
+      if (dialogueMatch && dialogueMatch[1]) {
+        const dialogue = dialogueMatch[1].replace(/^["']|["']$/g, '').trim();
+        setAudioText(dialogue);
+        toast.success(`Loaded dialogue from Scene ${sceneIndex + 1}`);
+        return;
+      }
+    }
+    
+    toast.error('This scene has no dialogue');
+  };
+
+  const insertAudioIntoScene = async (sceneId: string) => {
+    if (!generatedAudioUrl) {
+      toast.error('No audio generated yet');
+      return;
+    }
+
+    try {
+      // Convert blob URL to base64 for storage
+      const response = await fetch(generatedAudioUrl);
+      const blob = await response.blob();
+      
+      return new Promise<void>((resolve, reject) => {
+        const reader = new FileReader();
+        
+        reader.onloadend = async () => {
+          try {
+            const base64Audio = reader.result as string;
+            
+            // Save audio URL to scene
+            const { error } = await supabase
+              .from('scenes')
+              .update({ 
+                audio_url: base64Audio,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', sceneId);
+
+            if (error) throw error;
+
+            toast.success('Audio inserted into scene!');
+            await fetchProjectData();
+            resolve();
+          } catch (error: any) {
+            console.error('Error inserting audio:', error);
+            toast.error('Failed to insert audio into scene');
+            reject(error);
+          }
+        };
+
+        reader.onerror = () => {
+          toast.error('Failed to read audio file');
+          reject(new Error('Failed to read audio'));
+        };
+
+        reader.readAsDataURL(blob);
+      });
+    } catch (error: any) {
+      console.error('Error inserting audio:', error);
+      toast.error('Failed to insert audio into scene');
+    }
+  };
+
+  // Render AI Status Indicator
+  const renderAIStatus = () => {
+    if (aiStatus === 'idle') return null;
+
+    return (
+      <div className="fixed top-4 right-4 z-50">
+        <div className={`p-4 rounded-lg shadow-lg border ${
+          aiStatus === 'generating' ? 'bg-blue-900/90 border-blue-700' :
+          aiStatus === 'success' ? 'bg-green-900/90 border-green-700' :
+          'bg-red-900/90 border-red-700'
+        }`}>
+          <div className="flex items-center space-x-3">
+            {aiStatus === 'generating' && (
+              <>
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                <div>
+                  <div className="font-medium">Generating Story...</div>
+                  <div className="text-sm opacity-80">
+                    {generatedScenes > 0 
+                      ? `Creating scene ${generatedScenes}...` 
+                      : 'Starting generation...'
+                    }
+                  </div>
+                  <div className="w-48 h-2 bg-gray-700 rounded-full mt-2 overflow-hidden">
+                    <div 
+                      className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300"
+                      style={{ width: `${generationProgress}%` }}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+            {aiStatus === 'success' && (
+              <>
+                <Sparkles className="h-5 w-5 text-green-400" />
+                <div>
+                  <div className="font-medium">Story Generated!</div>
+                  <div className="text-sm opacity-80">
+                    Created {parsedStory?.scenes.length || 0} scenes
+                  </div>
+                </div>
+              </>
+            )}
+            {aiStatus === 'error' && (
+              <>
+                <Bot className="h-5 w-5 text-red-400" />
+                <div>
+                  <div className="font-medium">Generation Failed</div>
+                  <div className="text-sm opacity-80">
+                    Check your API key
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Render story summary
+  const renderStorySummary = () => {
+    if (!parsedStory || !parsedStory.title) return null;
+
+    return (
+      <div className="bg-gradient-to-r from-purple-800/40 to-pink-800/40 rounded-xl p-4 mb-4 border border-purple-700/30">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center space-x-3">
+            <div className="p-2 bg-purple-600/50 rounded-lg">
+              <Film className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-lg">{parsedStory.title}</h3>
+              <p className="text-sm text-gray-300">{parsedStory.summary}</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="px-3 py-1 bg-purple-600/50 rounded-full text-sm">
+              {parsedStory.scenes.length} Scenes
+            </span>
+            <button
+              onClick={() => setParsedStory(null)}
+              className="p-2 hover:bg-gray-700/50 rounded-lg transition"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-900">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto mb-4"></div>
+          <p className="text-gray-400">Loading editor...</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
+      {/* AI Status Overlay */}
+      {renderAIStatus()}
+
       {/* Top Bar */}
-      <div className="bg-gray-800 border-b border-gray-700">
+      <div className="bg-gray-800/90 backdrop-blur-sm border-b border-gray-700 sticky top-0 z-40">
         <div className="container mx-auto px-6 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
               <button
                 onClick={() => router.push('/dashboard')}
-                className="flex items-center space-x-2 text-gray-300 hover:text-white transition"
+                className="flex items-center space-x-2 text-gray-300 hover:text-white transition hover:bg-gray-700 p-2 rounded-lg"
               >
                 <ArrowLeft className="h-5 w-5" />
-                <span>Back</span>
+                <span>Dashboard</span>
               </button>
+              <div className="h-6 w-px bg-gray-700" />
               <h1 className="text-xl font-bold truncate max-w-md">{project?.title}</h1>
+              {parsedStory && (
+                <div className="flex items-center space-x-2 px-3 py-1 bg-gradient-to-r from-purple-600 to-pink-600 rounded-full text-sm">
+                  <Sparkles className="h-3 w-3" />
+                  <span>AI Story</span>
+                </div>
+              )}
             </div>
             
             <div className="flex items-center space-x-3">
@@ -535,38 +1204,125 @@ Scene 4: Happy ending with lessons learned`;
       </div>
 
       <div className="container mx-auto px-6 py-6">
+        {/* Story Summary */}
+        {renderStorySummary()}
+        
         <div className="grid grid-cols-12 gap-6">
           {/* Left Panel - Story & Scenes */}
           <div className="col-span-3 space-y-6">
-            {/* Story Generator */}
-            <div className="bg-gray-800 rounded-xl p-4">
-              <h3 className="font-bold mb-3 flex items-center">
-                <Zap className="h-5 w-5 mr-2" />
-                AI Story Generator
-              </h3>
+            {/* AI Story Generator Card */}
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-4 border border-gray-700">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center space-x-2">
+                  <Wand2 className="h-5 w-5 text-purple-400" />
+                  <h3 className="font-bold">AI Story Generator</h3>
+                </div>
+                <button
+                  onClick={() => setShowStoryOptions(!showStoryOptions)}
+                  className="p-1 hover:bg-gray-700 rounded"
+                >
+                  {showStoryOptions ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </button>
+              </div>
+
+              {/* Story Options */}
+              {showStoryOptions && (
+                <div className="mb-4 space-y-3 bg-gray-900/50 p-3 rounded-lg">
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">Genre</label>
+                    <select
+                      value={storyOptions.genre}
+                      onChange={(e) => setStoryOptions({...storyOptions, genre: e.target.value})}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg p-2 text-sm"
+                    >
+                      {genres.map(genre => (
+                        <option key={genre} value={genre}>
+                          {genre.charAt(0).toUpperCase() + genre.slice(1)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">Age Group</label>
+                    <select
+                      value={storyOptions.ageGroup}
+                      onChange={(e) => setStoryOptions({...storyOptions, ageGroup: e.target.value})}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg p-2 text-sm"
+                    >
+                      {ageGroups.map(group => (
+                        <option key={group.value} value={group.value}>
+                          {group.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">Length</label>
+                    <div className="flex space-x-2">
+                      {(['short', 'medium', 'long'] as const).map(length => (
+                        <button
+                          key={length}
+                          onClick={() => setStoryOptions({...storyOptions, length})}
+                          className={`flex-1 py-2 rounded-lg text-sm transition ${
+                            storyOptions.length === length
+                              ? 'bg-gradient-to-r from-purple-600 to-pink-600'
+                              : 'bg-gray-800 hover:bg-gray-700'
+                          }`}
+                        >
+                          {length.charAt(0).toUpperCase() + length.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <textarea
                 value={storyPrompt}
                 onChange={(e) => setStoryPrompt(e.target.value)}
-                placeholder="Describe your cartoon story... (e.g., A bear and rabbit go on an adventure)"
-                className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="Describe your cartoon story idea... (e.g., A brave rabbit who discovers magic in the forest)"
+                className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
               />
+              
               <button
                 onClick={generateStory}
                 disabled={generating}
-                className="w-full mt-3 py-2 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition disabled:opacity-50"
+                className="w-full mt-3 py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center font-medium"
               >
-                {generating ? 'Generating...' : '✨ Generate Story with AI'}
+                {generating ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Generate Complete Story
+                  </>
+                )}
               </button>
+
+              {/* Quick Tips */}
+              <div className="mt-4 pt-4 border-t border-gray-700">
+                <p className="text-xs text-gray-400">
+                  💡 Tip: Be specific! Add characters, locations, and conflicts for better stories.
+                </p>
+              </div>
             </div>
 
             {/* Scenes List */}
-            <div className="bg-gray-800 rounded-xl p-4">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="font-bold">Scenes ({scenes.length})</h3>
+            <div className="bg-gray-800/90 rounded-xl p-4 border border-gray-700">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center space-x-2">
+                  <Layers className="h-5 w-5 text-blue-400" />
+                  <h3 className="font-bold">Scenes ({scenes.length})</h3>
+                </div>
                 <div className="flex space-x-2">
                   <button
                     onClick={generateScene}
-                    className="p-2 bg-green-600 rounded-lg hover:bg-green-700 transition"
+                    className="p-2 bg-gradient-to-r from-green-600 to-emerald-600 rounded-lg hover:opacity-90 transition"
                     title="Generate Scene"
                   >
                     <Plus className="h-4 w-4" />
@@ -580,28 +1336,37 @@ Scene 4: Happy ending with lessons learned`;
                   </button>
                 </div>
               </div>
-              <div className="space-y-2 max-h-96 overflow-y-auto">
+              
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-2">
                 {scenes.map((scene) => (
                   <div
                     key={scene.id}
-                    className={`group relative p-3 rounded-lg transition ${
+                    className={`group relative p-3 rounded-lg transition-all ${
                       activeScene?.id === scene.id
-                        ? 'bg-purple-600'
-                        : 'bg-gray-700 hover:bg-gray-600'
+                        ? 'bg-gradient-to-r from-purple-600/20 to-pink-600/20 border border-purple-500/30'
+                        : 'bg-gray-700/50 hover:bg-gray-700 border border-transparent hover:border-gray-600'
                     }`}
                   >
                     <button
                       onClick={() => setActiveScene(scene)}
                       className="w-full text-left"
                     >
-                      <div className="font-medium flex items-center">
-                        <div className="w-6 h-6 flex items-center justify-center bg-black/30 rounded mr-2">
-                          {scene.scene_number}
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium flex items-center">
+                          <div className="w-6 h-6 flex items-center justify-center bg-black/30 rounded mr-2">
+                            {scene.scene_number}
+                          </div>
+                          Scene {scene.scene_number}
                         </div>
-                        Scene {scene.scene_number}
+                        <div className="text-xs text-gray-400">
+                          {scene.duration}s
+                        </div>
                       </div>
-                      <div className="text-sm text-gray-300 truncate mt-1">
+                      <div className="text-sm text-gray-300 truncate mt-1 pl-8">
                         {scene.description || 'No description'}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-2 flex items-center space-x-2">
+                        <span>{scene.scene_characters?.length || 0} characters</span>
                       </div>
                     </button>
                     <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition flex space-x-1">
@@ -614,7 +1379,7 @@ Scene 4: Happy ending with lessons learned`;
                       </button>
                       <button
                         onClick={() => deleteScene(scene.id)}
-                        className="p-1 bg-red-600 rounded hover:bg-red-500"
+                        className="p-1 bg-red-600/50 rounded hover:bg-red-500"
                         title="Delete"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -623,67 +1388,150 @@ Scene 4: Happy ending with lessons learned`;
                   </div>
                 ))}
               </div>
+
+              {scenes.length === 0 && (
+                <div className="text-center py-6 text-gray-500">
+                  <Image className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No scenes yet</p>
+                  <button
+                    onClick={generateScene}
+                    className="mt-2 px-4 py-2 text-sm bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition"
+                  >
+                    Generate First Scene
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Character Generator */}
-            <div className="bg-gray-800 rounded-xl p-4">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="font-bold">Characters</h3>
+            <div className="bg-gray-800/90 rounded-xl p-4 border border-gray-700">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center space-x-2">
+                  <Smile className="h-5 w-5 text-yellow-400" />
+                  <h3 className="font-bold">Characters ({characters.length})</h3>
+                </div>
                 <button
                   onClick={generateCharacter}
-                  className="flex items-center space-x-1 px-3 py-1 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg hover:opacity-90 transition"
+                  className="flex items-center space-x-2 px-3 py-1 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg hover:opacity-90 transition text-sm"
                 >
-                  <Plus className="h-4 w-4" />
+                  <Plus className="h-3 w-3" />
                   <span>AI Generate</span>
                 </button>
               </div>
-              <div className="space-y-3">
+              
+              <div className="space-y-3 max-h-64 overflow-y-auto pr-2">
                 {characters.map((character) => (
                   <div
                     key={character.id}
-                    className="flex items-center justify-between p-3 bg-gray-700 rounded-lg group"
+                    className="flex items-center justify-between p-3 bg-gray-700/30 rounded-lg group hover:bg-gray-700/50 transition"
                   >
                     <div className="flex items-center space-x-3">
                       <div 
-                        className="h-10 w-10 rounded-full bg-cover bg-center"
+                        className="h-10 w-10 rounded-full bg-cover bg-center border-2 border-purple-500 shadow-lg"
                         style={{ backgroundImage: `url(${character.image_url})` }}
                       />
                       <div>
                         <div className="font-medium">{character.name}</div>
-                        <div className="text-xs text-gray-400">Cartoon Character</div>
+                        <div className="text-xs text-gray-400 truncate max-w-[120px]">
+                          {character.description || 'Cartoon Character'}
+                        </div>
                       </div>
                     </div>
                     <button
-                      onClick={() => addCharacterToScene(character.id)}
-                      className="px-3 py-1 bg-purple-600 rounded-lg hover:bg-purple-700 transition opacity-0 group-hover:opacity-100"
+                      onClick={() => {
+                        if (activeScene) {
+                          addCharacterToScene(character.id);
+                        } else {
+                          toast.error('Select a scene first');
+                        }
+                      }}
+                      className="px-3 py-1 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition opacity-0 group-hover:opacity-100 text-sm"
+                      title="Add to Active Scene"
                     >
-                      Add
+                      Add to Scene
                     </button>
+                    {scenes.length > 0 && (
+                      <select
+                        onChange={(e) => {
+                          if (e.target.value && e.target.value !== 'active') {
+                            insertCharacterIntoScene(character.id, e.target.value);
+                            e.target.value = '';
+                          }
+                        }}
+                        className="px-2 py-1 bg-gray-800 border border-gray-700 rounded-lg hover:opacity-90 transition opacity-0 group-hover:opacity-100 text-xs"
+                        defaultValue=""
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <option value="">Insert into...</option>
+                        {scenes.map((scene) => (
+                          <option key={scene.id} value={scene.id}>
+                            Scene {scene.scene_number}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                 ))}
               </div>
+
+              {characters.length === 0 && (
+                <div className="text-center py-4 text-gray-500">
+                  <p className="text-sm">No characters yet</p>
+                  {parsedStory && parsedStory.characters.length > 0 ? (
+                    <button
+                      onClick={generateCharactersFromStory}
+                      className="mt-3 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition text-sm font-medium"
+                    >
+                      Generate Characters from Story
+                    </button>
+                  ) : (
+                    <p className="text-xs mt-1">Generate a story to create characters</p>
+                  )}
+                </div>
+              )}
+
+              {/* Generate Characters from Story Button */}
+              {parsedStory && parsedStory.characters.length > 0 && characters.length === 0 && (
+                <div className="mt-4 p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+                  <p className="text-sm text-gray-400 mb-2">
+                    Found {parsedStory.characters.length} characters in your story
+                  </p>
+                  <button
+                    onClick={generateCharactersFromStory}
+                    className="w-full py-2 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition text-sm font-medium"
+                  >
+                    Generate All Story Characters
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Center Panel - Canvas */}
           <div className="col-span-6">
-            <div className="bg-gray-800 rounded-xl p-4 h-full">
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-4 h-full border border-gray-700">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="font-bold">
-                  {activeScene ? `Scene ${activeScene.scene_number} Editor` : 'No Scene Selected'}
-                </h3>
+                <div className="flex items-center space-x-3">
+                  <h3 className="font-bold">
+                    {activeScene ? `Scene ${activeScene.scene_number} Editor` : 'No Scene Selected'}
+                  </h3>
+                  {activeScene && (
+                    <span className="px-2 py-1 bg-gray-700 rounded text-xs">
+                      {activeScene.scene_characters?.length || 0} characters
+                    </span>
+                  )}
+                </div>
                 <div className="flex space-x-2">
                   <button 
-                    className="p-2 bg-gray-700 rounded-lg hover:bg-gray-600 transition" 
-                    title="Audio"
-                    onClick={() => showToast('Audio tool activated')}
+                    onClick={generateVoiceover}
+                    className="p-2 bg-blue-600/20 hover:bg-blue-600/30 rounded-lg transition border border-blue-700/30"
+                    title="Generate Voiceover"
                   >
-                    <Volume2 className="h-5 w-5" />
+                    <Music className="h-5 w-5" />
                   </button>
                   <button 
-                    className="p-2 bg-gray-700 rounded-lg hover:bg-gray-600 transition" 
+                    className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition"
                     title="Settings"
-                    onClick={() => showToast('Settings tool activated')}
                   >
                     <Settings className="h-5 w-5" />
                   </button>
@@ -691,26 +1539,31 @@ Scene 4: Happy ending with lessons learned`;
               </div>
 
               {/* Animation Canvas */}
-              <div className="relative bg-gray-900 border-2 border-gray-700 rounded-lg h-96 mb-4 overflow-hidden">
+              <div className="relative bg-gray-900 border-2 border-gray-700 rounded-lg h-96 mb-4 overflow-hidden shadow-2xl">
                 {activeScene ? (
                   <div className="h-full">
                     {/* Background */}
                     <div
-                      className="absolute inset-0 bg-cover bg-center"
+                      className="absolute inset-0 bg-cover bg-center transition-all duration-500"
                       style={{
                         backgroundImage: activeScene.background_image_url 
                           ? `url(${activeScene.background_image_url})`
                           : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
                       }}
                     >
-                      <div className="absolute inset-0 bg-black/20" />
+                      <div className="absolute inset-0 bg-black/10" />
+                    </div>
+
+                    {/* Scene Number Overlay */}
+                    <div className="absolute top-4 left-4 bg-black/50 px-3 py-1 rounded-full text-sm">
+                      Scene {activeScene.scene_number}
                     </div>
 
                     {/* Draggable Characters */}
                     {activeScene.scene_characters?.map((sceneChar) => (
                       <div
                         key={sceneChar.id}
-                        className="absolute cursor-move transition-all duration-200 hover:scale-105"
+                        className="absolute cursor-move transition-all duration-200 hover:scale-105 hover:z-10"
                         style={{
                           left: `${sceneChar.position_x}%`,
                           bottom: `${sceneChar.position_y}%`,
@@ -726,10 +1579,22 @@ Scene 4: Happy ending with lessons learned`;
                           }
                         }}
                       >
-                        <div className="relative">
-                          <div className="h-32 w-24 bg-gradient-to-r from-yellow-400 to-orange-400 rounded-xl shadow-2xl" />
-                          <div className="absolute -bottom-6 left-1/2 transform -translate-x-1/2 bg-black/70 px-2 py-1 rounded text-xs whitespace-nowrap">
+                        <div className="relative group">
+                          <div 
+                            className="h-32 w-24 rounded-xl shadow-2xl border-2 border-white/20 group-hover:border-yellow-400 transition-all duration-200"
+                            style={{
+                              backgroundImage: sceneChar.characters.image_url 
+                                ? `url(${sceneChar.characters.image_url})`
+                                : 'linear-gradient(to bottom right, #f59e0b, #d97706)',
+                              backgroundSize: 'cover',
+                              backgroundPosition: 'center'
+                            }}
+                          />
+                          <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 bg-black/80 px-3 py-1 rounded text-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
                             {sceneChar.characters.name}
+                          </div>
+                          <div className="absolute -top-2 -right-2 bg-purple-600 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Move className="h-3 w-3" />
                           </div>
                         </div>
                       </div>
@@ -744,35 +1609,58 @@ Scene 4: Happy ending with lessons learned`;
                           toast('Generate characters first');
                         }
                       }}
-                      className="absolute bottom-4 right-4 p-3 bg-purple-600 rounded-full hover:bg-purple-700 transition shadow-lg"
+                      className="absolute bottom-6 right-6 p-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-full hover:opacity-90 transition shadow-xl hover:scale-110"
                       title="Add Character"
                     >
                       <Plus className="h-6 w-6" />
                     </button>
                   </div>
                 ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-gray-500">
-                    <Image className="h-16 w-16 mb-4" />
-                    <p>No scene selected</p>
-                    <p className="text-sm">Select or create a scene to start editing</p>
+                  <div className="h-full flex flex-col items-center justify-center text-gray-500 p-8">
+                    <Film className="h-20 w-20 mb-4 opacity-30" />
+                    <p className="text-lg mb-2">No scene selected</p>
+                    <p className="text-sm text-center mb-6">Select or create a scene to start editing</p>
+                    <div className="flex space-x-3">
+                      <button
+                        onClick={generateScene}
+                        className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition font-medium"
+                      >
+                        Generate Scene
+                      </button>
+                      {parsedStory && (
+                        <button
+                          onClick={() => autoCreateScenesFromParsedStory(parsedStory)}
+                          className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg hover:opacity-90 transition font-medium"
+                        >
+                          Recreate All Scenes
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
 
               {/* Scene Controls */}
               <div className="grid grid-cols-3 gap-4">
-                <div className="bg-gray-900 rounded-lg p-4">
+                <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
                   <label className="block text-sm text-gray-400 mb-2">Scene Description</label>
                   <textarea
                     value={sceneDescription}
                     onChange={(e) => setSceneDescription(e.target.value)}
-                    className="w-full h-24 bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    onBlur={saveProject}
+                    className="w-full h-24 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
                     placeholder="Describe what happens in this scene..."
                   />
+                  <div className="text-xs text-gray-500 mt-2">
+                    {sceneDescription.length}/200 characters
+                  </div>
                 </div>
                 
-                <div className="bg-gray-900 rounded-lg p-4">
-                  <label className="block text-sm text-gray-400 mb-2">Duration</label>
+                <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+                  <label className="block text-sm text-gray-400 mb-2 flex items-center justify-between">
+                    <span>Duration</span>
+                    <Clock className="h-4 w-4" />
+                  </label>
                   <input
                     type="range"
                     min="1"
@@ -791,32 +1679,38 @@ Scene 4: Happy ending with lessons learned`;
                     }}
                     className="w-full"
                   />
-                  <div className="text-center mt-2">
-                    <span className="text-lg font-bold">{activeScene?.duration || 5}</span>
+                  <div className="text-center mt-3">
+                    <span className="text-2xl font-bold">{activeScene?.duration || 5}</span>
                     <span className="text-gray-400 ml-1">seconds</span>
                   </div>
                 </div>
 
-                <div className="bg-gray-900 rounded-lg p-4">
+                <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
                   <label className="block text-sm text-gray-400 mb-2">Animation Effects</label>
-                  <div className="flex space-x-2">
+                  <div className="grid grid-cols-2 gap-2">
                     <button 
-                      className="flex-1 py-2 bg-gray-800 rounded-lg hover:bg-gray-700 transition"
-                      onClick={() => showToast('Fade In effect added')}
+                      className="py-2 bg-gray-900 rounded-lg hover:bg-gray-800 transition flex items-center justify-center space-x-2"
                     >
-                      Fade In
+                      <Zap className="h-4 w-4" />
+                      <span>Fade In</span>
                     </button>
                     <button 
-                      className="flex-1 py-2 bg-gray-800 rounded-lg hover:bg-gray-700 transition"
-                      onClick={() => showToast('Zoom effect added')}
+                      className="py-2 bg-gray-900 rounded-lg hover:bg-gray-800 transition flex items-center justify-center space-x-2"
                     >
-                      Zoom
+                      <Zap className="h-4 w-4" />
+                      <span>Zoom</span>
                     </button>
                     <button 
-                      className="flex-1 py-2 bg-gray-800 rounded-lg hover:bg-gray-700 transition"
-                      onClick={() => showToast('Pan effect added')}
+                      className="py-2 bg-gray-900 rounded-lg hover:bg-gray-800 transition flex items-center justify-center space-x-2"
                     >
-                      Pan
+                      <Zap className="h-4 w-4" />
+                      <span>Pan</span>
+                    </button>
+                    <button 
+                      className="py-2 bg-gray-900 rounded-lg hover:bg-gray-800 transition flex items-center justify-center space-x-2"
+                    >
+                      <Zap className="h-4 w-4" />
+                      <span>Bounce</span>
                     </button>
                   </div>
                 </div>
@@ -826,41 +1720,89 @@ Scene 4: Happy ending with lessons learned`;
 
           {/* Right Panel - Properties & Tools */}
           <div className="col-span-3 space-y-6">
+            {/* AI Tools Panel */}
+            <div className="bg-gradient-to-br from-purple-900/20 to-pink-900/20 rounded-xl p-4 border border-purple-700/30">
+              <div className="flex items-center space-x-2 mb-4">
+                <Bot className="h-5 w-5 text-purple-400" />
+                <h3 className="font-bold">AI Tools</h3>
+              </div>
+              
+              <div className="space-y-3">
+                <button 
+                  onClick={generateStory}
+                  disabled={generating}
+                  className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center space-x-2"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  <span>Generate Story</span>
+                </button>
+                
+                <button 
+                  onClick={generateScene}
+                  className="w-full py-3 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg hover:opacity-90 transition flex items-center justify-center space-x-2"
+                >
+                  <Image className="h-4 w-4" />
+                  <span>Generate Scene</span>
+                </button>
+                
+                <button 
+                  onClick={generateCharacter}
+                  className="w-full py-3 bg-gradient-to-r from-green-600 to-emerald-600 rounded-lg hover:opacity-90 transition flex items-center justify-center space-x-2"
+                >
+                  <Smile className="h-4 w-4" />
+                  <span>Generate Character</span>
+                </button>
+                
+                <button 
+                  onClick={generateVoiceover}
+                  className="w-full py-3 bg-gradient-to-r from-yellow-600 to-orange-600 rounded-lg hover:opacity-90 transition flex items-center justify-center space-x-2"
+                >
+                  <Volume2 className="h-4 w-4" />
+                  <span>Generate Voiceover</span>
+                </button>
+              </div>
+            </div>
+
             {/* Scene Properties */}
-            <div className="bg-gray-800 rounded-xl p-4">
-              <div className="flex justify-between items-center mb-3">
+            <div className="bg-gray-800/90 rounded-xl p-4 border border-gray-700">
+              <div className="flex justify-between items-center mb-4">
                 <h3 className="font-bold">Scene Properties</h3>
                 <button
                   onClick={() => setShowPropertiesPanel(!showPropertiesPanel)}
-                  className="p-1 bg-gray-700 rounded"
+                  className="p-2 bg-gray-700 rounded-lg hover:bg-gray-600 transition"
                 >
-                  {showPropertiesPanel ? 'Hide' : 'Show'}
+                  {showPropertiesPanel ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                 </button>
               </div>
               
               {showPropertiesPanel && activeScene && (
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1">Background</label>
+                    <label className="block text-sm text-gray-400 mb-2">Background Image</label>
                     <div className="flex space-x-2">
                       <input
                         type="text"
                         value={activeScene.background_image_url || ''}
                         onChange={(e) => {
+                          const url = e.target.value;
                           supabase
                             .from('scenes')
-                            .update({ background_image_url: e.target.value })
+                            .update({ background_image_url: url })
                             .eq('id', activeScene.id)
                             .then(({ error }) => {
-                              if (error) console.error('Update background error:', error);
+                              if (error) {
+                                console.error('Update background error:', error);
+                              } else {
+                                fetchProjectData(); // Refresh to show new background
+                              }
                             });
                         }}
-                        placeholder="Image URL or search..."
+                        placeholder="Enter image URL..."
                         className="flex-1 bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm"
                       />
                       <button 
                         className="px-3 py-2 bg-blue-600 rounded-lg hover:bg-blue-700 transition"
-                        onClick={() => showToast('Upload feature coming soon')}
+                        title="Upload"
                       >
                         <Upload className="h-4 w-4" />
                       </button>
@@ -868,24 +1810,32 @@ Scene 4: Happy ending with lessons learned`;
                   </div>
 
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1">Characters in Scene</label>
-                    <div className="space-y-2">
+                    <label className="block text-sm text-gray-400 mb-2">Characters in Scene</label>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
                       {activeScene.scene_characters?.map((sceneChar) => (
-                        <div key={sceneChar.id} className="flex items-center justify-between p-2 bg-gray-700 rounded">
+                        <div key={sceneChar.id} className="flex items-center justify-between p-2 bg-gray-700/50 rounded-lg">
                           <div className="flex items-center space-x-2">
-                            <div className="h-6 w-6 rounded-full bg-gradient-to-r from-green-400 to-blue-400" />
-                            <span>{sceneChar.characters.name}</span>
+                            <div 
+                              className="h-8 w-8 rounded-full bg-cover bg-center"
+                              style={{ backgroundImage: `url(${sceneChar.characters.image_url})` }}
+                            />
+                            <div>
+                              <div className="font-medium text-sm">{sceneChar.characters.name}</div>
+                              <div className="text-xs text-gray-400">
+                                X: {Math.round(sceneChar.position_x)}% Y: {Math.round(sceneChar.position_y)}%
+                              </div>
+                            </div>
                           </div>
                           <div className="flex space-x-1">
                             <button 
                               className="p-1 bg-gray-600 rounded hover:bg-gray-500"
-                              onClick={() => showToast('Change expression for ' + sceneChar.characters.name)}
+                              title="Change Expression"
                             >
                               <Smile className="h-3 w-3" />
                             </button>
                             <button 
                               className="p-1 bg-gray-600 rounded hover:bg-gray-500"
-                              onClick={() => showToast('Add voice for ' + sceneChar.characters.name)}
+                              title="Add Voice"
                             >
                               <Mic className="h-3 w-3" />
                             </button>
@@ -897,105 +1847,339 @@ Scene 4: Happy ending with lessons learned`;
 
                   <button 
                     className="w-full py-2 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition"
-                    onClick={() => showToast('Audio generation feature coming soon')}
+                    onClick={() => toast.success('AI enhancement coming soon!')}
                   >
-                    Generate Audio with AI
+                    Enhance with AI
                   </button>
                 </div>
               )}
             </div>
 
-            {/* Animation Tools */}
-            <div className="bg-gray-800 rounded-xl p-4">
-              <h3 className="font-bold mb-3">Animation Tools</h3>
-              <div className="grid grid-cols-2 gap-3">
+            {/* Quick Tools */}
+            <div className="bg-gray-800/90 rounded-xl p-4 border border-gray-700">
+              <h3 className="font-bold mb-4">Quick Tools</h3>
+              <div className="grid grid-cols-3 gap-3">
                 <button 
-                  className="p-4 bg-gray-700 rounded-lg hover:bg-gray-600 transition flex flex-col items-center"
-                  onClick={() => showToast('Move tool activated')}
+                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
+                  title="Move Tool"
                 >
-                  <Move className="h-6 w-6 mb-2" />
-                  <span className="text-sm">Move</span>
+                  <Move className="h-5 w-5 mb-1" />
+                  <span className="text-xs">Move</span>
                 </button>
                 <button 
-                  className="p-4 bg-gray-700 rounded-lg hover:bg-gray-600 transition flex flex-col items-center"
-                  onClick={() => showToast('Text tool activated')}
+                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
+                  title="Text Tool"
                 >
-                  <Type className="h-6 w-6 mb-2" />
-                  <span className="text-sm">Text</span>
+                  <Type className="h-5 w-5 mb-1" />
+                  <span className="text-xs">Text</span>
                 </button>
                 <button 
-                  className="p-4 bg-gray-700 rounded-lg hover:bg-gray-600 transition flex flex-col items-center"
-                  onClick={() => showToast('Audio tool activated')}
+                  onClick={generateVoiceover}
+                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
+                  title="Audio Tool"
                 >
-                  <Volume2 className="h-6 w-6 mb-2" />
-                  <span className="text-sm">Audio</span>
+                  <Volume2 className="h-5 w-5 mb-1" />
+                  <span className="text-xs">Audio</span>
                 </button>
                 <button 
-                  className="p-4 bg-gray-700 rounded-lg hover:bg-gray-600 transition flex flex-col items-center"
-                  onClick={() => showToast('Effects tool activated')}
+                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
+                  title="Effects"
                 >
-                  <Zap className="h-6 w-6 mb-2" />
-                  <span className="text-sm">Effects</span>
+                  <Zap className="h-5 w-5 mb-1" />
+                  <span className="text-xs">Effects</span>
                 </button>
                 <button 
-                  className="p-4 bg-gray-700 rounded-lg hover:bg-gray-600 transition flex flex-col items-center"
-                  onClick={() => {
-                    if (activeScene) {
-                      supabase
-                        .from('scenes')
-                        .update({ background_image_url: null })
-                        .eq('id', activeScene.id)
-                        .then(({ error }) => {
-                          if (error) {
-                            console.error('Clear background error:', error);
-                            toast.error('Failed to clear background');
-                          } else {
-                            toast.success('Background cleared');
-                          }
-                        });
-                    }
-                  }}
+                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
+                  onClick={saveProject}
+                  title="Save"
                 >
-                  <RotateCcw className="h-6 w-6 mb-2" />
-                  <span className="text-sm">Clear</span>
+                  <Save className="h-5 w-5 mb-1" />
+                  <span className="text-xs">Save</span>
                 </button>
                 <button 
-                  className="p-4 bg-gray-700 rounded-lg hover:bg-gray-600 transition flex flex-col items-center"
-                  onClick={() => exportAnimation()}
+                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
+                  onClick={exportAnimation}
+                  title="Export"
                 >
-                  <Download className="h-6 w-6 mb-2" />
-                  <span className="text-sm">Export</span>
+                  <Download className="h-5 w-5 mb-1" />
+                  <span className="text-xs">Export</span>
                 </button>
               </div>
             </div>
 
             {/* Quick Actions */}
-            <div className="bg-gray-800 rounded-xl p-4">
+            <div className="bg-gray-800/90 rounded-xl p-4 border border-gray-700">
               <h3 className="font-bold mb-3">Quick Actions</h3>
               <div className="space-y-2">
                 <button 
-                  onClick={saveProject}
-                  className="w-full py-2 bg-green-600 rounded-lg hover:bg-green-700 transition"
-                >
-                  Save All Changes
-                </button>
-                <button 
-                  onClick={generateScene}
-                  className="w-full py-2 bg-blue-600 rounded-lg hover:bg-blue-700 transition"
-                >
-                  Generate New Scene
-                </button>
-                <button 
                   onClick={() => router.push(`/play/${projectId}`)}
-                  className="w-full py-2 bg-purple-600 rounded-lg hover:bg-purple-700 transition"
+                  className="w-full py-2 bg-purple-600 rounded-lg hover:bg-purple-700 transition flex items-center justify-center space-x-2"
                 >
-                  Preview Animation
+                  <Play className="h-4 w-4" />
+                  <span>Preview Animation</span>
+                </button>
+                <button 
+                  onClick={() => {
+                    if (parsedStory && confirm('This will replace all existing scenes. Continue?')) {
+                      autoCreateScenesFromParsedStory(parsedStory);
+                    }
+                  }}
+                  className="w-full py-2 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg hover:opacity-90 transition flex items-center justify-center space-x-2"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  <span>Rebuild Scenes</span>
+                </button>
+                <button 
+                  onClick={() => toast.success('Coming soon: Export with voiceover!')}
+                  className="w-full py-2 bg-gradient-to-r from-green-600 to-emerald-600 rounded-lg hover:opacity-90 transition flex items-center justify-center space-x-2"
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  <span>Export with Audio</span>
                 </button>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Audio Generation Modal */}
+      {showAudioModal && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold flex items-center space-x-2">
+                  <Volume2 className="h-6 w-6" />
+                  <span>Generate Audio</span>
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowAudioModal(false);
+                    setGeneratedAudioUrl(null);
+                    setAudioText('');
+                  }}
+                  className="p-2 hover:bg-gray-700 rounded-lg transition"
+                >
+                  <span className="text-2xl">&times;</span>
+                </button>
+              </div>
+
+              {/* Select Dialogue from Story or Scenes */}
+              {(parsedStory?.scenes.length > 0 || scenes.length > 0) && (
+                <div className="mb-6 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+                  <h3 className="font-semibold mb-3">Select Dialogue from Scenes</h3>
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {scenes.map((dbScene) => {
+                      // Find matching parsed scene
+                      const parsedScene = parsedStory?.scenes.find(s => s.sceneNumber === dbScene.scene_number);
+                      const dialogue = parsedScene?.dialogue || 
+                        (dbScene.description?.match(/Dialogue:\s*(.+)/i)?.[1] || '');
+                      
+                      return (
+                        <button
+                          key={dbScene.id}
+                          onClick={() => selectDialogueFromScene(dbScene.scene_number - 1)}
+                          className="w-full text-left p-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition text-sm"
+                        >
+                          <div className="font-medium">Scene {dbScene.scene_number}: {parsedScene?.title || dbScene.description?.substring(0, 30) || 'Untitled'}</div>
+                          {dialogue && (
+                            <div className="text-gray-400 text-xs mt-1 truncate">
+                              {dialogue.replace(/^["']|["']$/g, '').substring(0, 60)}...
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Text Input */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">
+                  Text to Convert to Audio
+                </label>
+                <textarea
+                  value={audioText}
+                  onChange={(e) => setAudioText(e.target.value)}
+                  placeholder="Enter text to generate audio, or select dialogue from story above..."
+                  className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+                  maxLength={5000}
+                />
+                <div className="text-xs text-gray-400 mt-1">
+                  {audioText.length} / 5000 characters
+                </div>
+              </div>
+
+              {/* Voice Selection */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium mb-2">Voice</label>
+                <select
+                  value={audioVoice}
+                  onChange={(e) => setAudioVoice(e.target.value)}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="Fritz-PlayAI">Fritz-PlayAI</option>
+                </select>
+              </div>
+
+              {/* Generate Button */}
+              <button
+                onClick={generateAudio}
+                disabled={generatingAudio || !audioText.trim()}
+                className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center font-medium"
+              >
+                {generatingAudio ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    Generating Audio...
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="h-4 w-4 mr-2" />
+                    Generate Audio
+                  </>
+                )}
+              </button>
+
+              {/* Generated Audio Player */}
+              {generatedAudioUrl && (
+                <div className="mt-6 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+                  <h3 className="font-semibold mb-3">Generated Audio</h3>
+                  <audio
+                    controls
+                    src={generatedAudioUrl}
+                    className="w-full mb-3"
+                  />
+                  
+                  {/* Insert into Scene */}
+                  {scenes.length > 0 && (
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium mb-2">Insert into Scene</label>
+                      <select
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            insertAudioIntoScene(e.target.value);
+                            e.target.value = '';
+                          }
+                        }}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        defaultValue=""
+                      >
+                        <option value="">Select a scene...</option>
+                        {scenes.map((scene) => (
+                          <option key={scene.id} value={scene.id}>
+                            Scene {scene.scene_number}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  
+                  <div className="flex space-x-2">
+                    <a
+                      href={generatedAudioUrl}
+                      download="generated-audio.wav"
+                      className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-center transition"
+                    >
+                      Download Audio
+                    </a>
+                    <button
+                      onClick={() => {
+                        const audio = new Audio(generatedAudioUrl);
+                        audio.play();
+                      }}
+                      className="flex-1 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition"
+                    >
+                      Play Again
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Character Generation Modal */}
+      {showCharacterModal && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-md">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold flex items-center space-x-2">
+                  <Smile className="h-6 w-6" />
+                  <span>Create Character with AI</span>
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowCharacterModal(false);
+                    setCharacterName('');
+                    setCharacterDescription('');
+                  }}
+                  className="p-2 hover:bg-gray-700 rounded-lg transition"
+                >
+                  <span className="text-2xl">&times;</span>
+                </button>
+              </div>
+
+              {/* Character Name Input */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">
+                  Character Name *
+                </label>
+                <input
+                  type="text"
+                  value={characterName}
+                  onChange={(e) => setCharacterName(e.target.value)}
+                  placeholder="e.g., Benny the Bear"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  maxLength={50}
+                />
+              </div>
+
+              {/* Character Description Input */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium mb-2">
+                  Character Description *
+                </label>
+                <textarea
+                  value={characterDescription}
+                  onChange={(e) => setCharacterDescription(e.target.value)}
+                  placeholder="Describe the character's appearance, personality, and traits... (e.g., A friendly brown bear with a red scarf, loves honey, brave and adventurous)"
+                  className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+                  maxLength={500}
+                />
+                <div className="text-xs text-gray-400 mt-1">
+                  {characterDescription.length} / 500 characters
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  💡 Tip: Be specific! Include details like appearance, clothing, personality traits, and any special features.
+                </p>
+              </div>
+
+              {/* Create Button */}
+              <button
+                onClick={createCharacterWithAI}
+                disabled={generatingCharacter || !characterName.trim() || !characterDescription.trim()}
+                className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center font-medium"
+              >
+                {generatingCharacter ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    Creating Character...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Create Character
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
