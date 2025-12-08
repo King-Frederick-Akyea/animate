@@ -21,6 +21,9 @@ interface Character {
   description?: string;
   character_type: string;
   image_url?: string;
+  project_id: string;
+  created_at?: string;
+  is_ai_generated?: boolean;
 }
 
 interface SceneCharacter {
@@ -30,6 +33,7 @@ interface SceneCharacter {
   scale: number;
   expression: string;
   characters: Character;
+  character_id: string;
 }
 
 interface Scene {
@@ -84,7 +88,7 @@ export default function EditorPage() {
   // AI Generation Status
   const [aiStatus, setAiStatus] = useState<'idle' | 'generating' | 'success' | 'error'>('idle');
   const [generationProgress, setGenerationProgress] = useState(0);
-  const [generatedScenes, setGeneratedScenes] = useState<number>(0);
+  const [generatedScenes, setGeneratedScenes] = useState(0);
 
   // Audio Generation State
   const [showAudioModal, setShowAudioModal] = useState(false);
@@ -166,18 +170,28 @@ export default function EditorPage() {
       }
 
       // Fetch characters
-      const { data: charactersData, error: charactersError } = await supabase
-        .from('characters')
-        .select('*')
-        .eq('project_id', projectId);
-
-      if (charactersError) throw charactersError;
-      setCharacters(charactersData || []);
+      await fetchCharacters();
     } catch (error: any) {
       console.error('Failed to load project data:', error);
       toast.error('Failed to load project data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchCharacters = async () => {
+    try {
+      const { data: charactersData, error: charactersError } = await supabase
+        .from('characters')
+        .select('*')
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false });
+
+      if (charactersError) throw charactersError;
+      setCharacters(charactersData || []);
+    } catch (error: any) {
+      console.error('Error fetching characters:', error);
+      toast.error('Failed to load characters');
     }
   };
 
@@ -213,136 +227,127 @@ export default function EditorPage() {
   };
 
   const generateStory = async () => {
-  if (!storyPrompt.trim()) {
-    toast.error('Please enter a story prompt');
-    return;
-  }
+    if (!storyPrompt.trim()) {
+      toast.error('Please enter a story prompt');
+      return;
+    }
 
-  setGenerating(true);
-  setAiStatus('generating');
-  setGenerationProgress(10);
+    setGenerating(true);
+    setAiStatus('generating');
+    setGenerationProgress(10);
 
-  const progressInterval = setInterval(() => {
-    setGenerationProgress(prev => Math.min(prev + 2, 90));
-  }, 500);
+    const progressInterval = setInterval(() => {
+      setGenerationProgress(prev => Math.min(prev + 2, 90));
+    }, 500);
 
-  try {
-    // First, test if the API endpoint exists
     try {
-      const testResponse = await fetch('/api/story', {
-        method: 'GET',
+      // Now make the actual POST request
+      const response = await fetch('/api/story', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          prompt: storyPrompt.trim(),
+          ...storyOptions 
+        }),
       });
-      
-      if (!testResponse.ok) {
-        console.warn('API endpoint test failed:', testResponse.status);
+
+      clearInterval(progressInterval);
+
+      // Check if response is JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text();
+        console.error('Non-JSON response:', text.substring(0, 200));
+        
+        // Check if it's HTML (404 page)
+        if (text.includes('<!DOCTYPE') || text.includes('<html')) {
+          throw new Error(
+            'API endpoint not found (404). Make sure the file exists at: app/api/story/route.ts'
+          );
+        }
+        
+        throw new Error(`Invalid response format: ${contentType}`);
       }
-    } catch (testError) {
-      console.warn('API endpoint may not exist:', testError);
-    }
 
-    // Now make the actual POST request
-    const response = await fetch('/api/story', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        prompt: storyPrompt.trim(),
-        ...storyOptions 
-      }),
-    });
-
-    clearInterval(progressInterval);
-
-    // Check if response is JSON
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      const text = await response.text();
-      console.error('Non-JSON response:', text.substring(0, 200));
+      const data = await response.json();
       
-      // Check if it's HTML (404 page)
-      if (text.includes('<!DOCTYPE') || text.includes('<html')) {
-        throw new Error(
-          'API endpoint not found (404). Make sure the file exists at: app/api/story/route.ts'
-        );
+      if (!response.ok) {
+        throw new Error(data.error || data.details || `HTTP ${response.status}: ${response.statusText}`);
       }
       
-      throw new Error(`Invalid response format: ${contentType}`);
-    }
+      if (!data.success) {
+        throw new Error(data.error || 'Story generation failed');
+      }
 
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || data.details || `HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    if (!data.success) {
-      throw new Error(data.error || 'Story generation failed');
-    }
+      setGenerationProgress(100);
+      await new Promise(resolve => setTimeout(resolve, 500));
 
-    setGenerationProgress(100);
-    await new Promise(resolve => setTimeout(resolve, 500));
+      // Update project with generated story
+      const { error: updateError } = await supabase
+        .from('projects')
+        .update({ 
+          story_text: data.story,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', projectId);
 
-    // Update project with generated story
-    const { error: updateError } = await supabase
-      .from('projects')
-      .update({ 
-        story_text: data.story,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', projectId);
+      if (updateError) throw updateError;
 
-    if (updateError) throw updateError;
-
-    setStoryPrompt(data.story);
-    
-    // Parse the story with error handling
-    let parsed: ParsedStory;
-    try {
-      parsed = parseStoryText(data.story);
-      // Validate parsed story has scenes
-      if (!parsed.scenes || parsed.scenes.length === 0) {
-        console.warn('No scenes found in parsed story, using fallback parser');
+      setStoryPrompt(data.story);
+      
+      // Parse the story with error handling
+      let parsed: ParsedStory;
+      try {
+        parsed = parseStoryText(data.story);
+        // Validate parsed story has scenes
+        if (!parsed.scenes || parsed.scenes.length === 0) {
+          console.warn('No scenes found in parsed story, using fallback parser');
+          const { parseSimpleStory } = await import('@/lib/storyParser');
+          parsed = parseSimpleStory(data.story);
+        }
+      } catch (parseError) {
+        console.error('Story parsing error, using fallback:', parseError);
         const { parseSimpleStory } = await import('@/lib/storyParser');
         parsed = parseSimpleStory(data.story);
       }
-    } catch (parseError) {
-      console.error('Story parsing error, using fallback:', parseError);
-      const { parseSimpleStory } = await import('@/lib/storyParser');
-      parsed = parseSimpleStory(data.story);
+      
+      setParsedStory(parsed);
+      
+      // Auto-create scenes from the parsed story
+      await autoCreateScenesFromParsedStory(parsed);
+      
+      setAiStatus('success');
+      toast.success(`Story generated successfully! Auto-created ${parsed.scenes?.length || 0} scenes.`);
+      
+    } catch (error: any) {
+      clearInterval(progressInterval);
+      console.error('Story generation error:', error);
+      
+      let errorMessage = error.message || 'Failed to generate story';
+      
+      // User-friendly error messages
+      if (errorMessage.includes('API endpoint not found')) {
+        errorMessage = 'API route not found. Please create the file at: app/api/story/route.ts';
+      } else if (errorMessage.includes('GROQ_API_KEY') || errorMessage.includes('API key')) {
+        errorMessage = 'API key not configured. Get a free key from console.groq.com';
+      } else if (errorMessage.includes('rate limit')) {
+        errorMessage = 'Rate limit exceeded. Please wait a minute.';
+      }
+      
+      setAiStatus('error');
+      toast.error(errorMessage);
+    } finally {
+      setGenerating(false);
+      setTimeout(() => setAiStatus('idle'), 3000);
     }
-    
-    setParsedStory(parsed);
-    
-    // Auto-create scenes from the parsed story
-    await autoCreateScenesFromParsedStory(parsed);
-    
-    setAiStatus('success');
-    toast.success(`Story generated successfully! Auto-created ${parsed.scenes.length} scenes.`);
-    
-  } catch (error: any) {
-    clearInterval(progressInterval);
-    console.error('Story generation error:', error);
-    
-    let errorMessage = error.message || 'Failed to generate story';
-    
-    // User-friendly error messages
-    if (errorMessage.includes('API endpoint not found')) {
-      errorMessage = 'API route not found. Please create the file at: app/api/story/route.ts';
-    } else if (errorMessage.includes('GROQ_API_KEY') || errorMessage.includes('API key')) {
-      errorMessage = 'API key not configured. Get a free key from console.groq.com';
-    } else if (errorMessage.includes('rate limit')) {
-      errorMessage = 'Rate limit exceeded. Please wait a minute.';
-    }
-    
-    setAiStatus('error');
-    toast.error(errorMessage);
-  } finally {
-    setGenerating(false);
-    setTimeout(() => setAiStatus('idle'), 3000);
-  }
-};
+  };
 
   const autoCreateScenesFromParsedStory = async (parsed: ParsedStory) => {
+    if (!parsed?.scenes || parsed.scenes.length === 0) {
+      toast.error('No scenes to create');
+      return;
+    }
+
     const toastId = toast.loading(`Creating ${parsed.scenes.length} scenes...`);
     
     try {
@@ -387,7 +392,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
         if (sceneError) throw sceneError;
 
         // Create characters for the scene
-        await createCharactersForScene(parsed.title, scene.characters, newScene.id);
+        await createCharactersForScene(parsed.title || 'Story', scene.characters, newScene.id);
         
         // Small delay to show progress
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -420,7 +425,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
           storyTitle: storyContext?.title,
           storyGenre: storyContext?.genre,
           allCharacters: storyContext?.characters 
-            ? storyContext.characters.map(c => typeof c === 'string' ? c : c.name)
+            ? storyContext.characters.map((c: any) => typeof c === 'string' ? c : c.name)
             : (characters.length > 0 ? characters.map(c => c.name) : []),
           storyContext: storyContext?.summary
         }),
@@ -476,6 +481,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
               description: `Character from "${storyTitle}"`,
               character_type: 'cartoon',
               image_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${charName}&backgroundColor=4f46e5&radius=50`,
+              is_ai_generated: true,
             }])
             .select()
             .single();
@@ -501,7 +507,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
   };
 
   const generateCharactersFromStory = async () => {
-    if (!parsedStory || !parsedStory.characters || parsedStory.characters.length === 0) {
+    if (!parsedStory?.characters || parsedStory.characters.length === 0) {
       toast.error('No characters found in the story. Generate a story first.');
       return;
     }
@@ -530,6 +536,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
               description: storyChar.description,
               character_type: 'cartoon',
               image_url: imageUrl,
+              is_ai_generated: true,
             }])
             .select()
             .single();
@@ -543,7 +550,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
       }
 
       // Refresh characters list
-      await fetchProjectData();
+      await fetchCharacters();
 
       toast.dismiss(toastId);
       toast.success(`Created ${createdChars.length} characters from story!`);
@@ -554,44 +561,144 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
     }
   };
 
-  const insertCharacterIntoScene = async (characterId: string, sceneId: string) => {
-    if (!activeScene || activeScene.id !== sceneId) {
-      toast.error('Please select the target scene first');
+  const duplicateCharacter = async (character: Character) => {
+    try {
+      const { data: newCharacter, error } = await supabase
+        .from('characters')
+        .insert([{
+          project_id: projectId,
+          name: `${character.name} (Copy)`,
+          description: character.description,
+          character_type: character.character_type,
+          image_url: character.image_url,
+          is_ai_generated: character.is_ai_generated || false
+        }])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Refresh characters list
+      await fetchCharacters();
+      toast.success('Character duplicated successfully!');
+    } catch (error: any) {
+      console.error('Error duplicating character:', error);
+      toast.error('Failed to duplicate character');
+    }
+  };
+
+  const deleteCharacter = async (characterId: string) => {
+    if (!confirm('Are you sure you want to delete this character? This will remove it from all scenes.')) {
       return;
     }
 
     try {
-      // Check if character is already in scene
-      const existing = activeScene.scene_characters?.find(
-        sc => sc.characters.id === characterId
-      );
+      // First, delete from scene_characters to handle foreign key constraint
+      const { error: sceneCharError } = await supabase
+        .from('scene_characters')
+        .delete()
+        .eq('character_id', characterId);
 
-      if (existing) {
-        toast.error('Character is already in this scene');
-        return;
+      if (sceneCharError) throw sceneCharError;
+
+      // Then delete the character
+      const { error: charError } = await supabase
+        .from('characters')
+        .delete()
+        .eq('id', characterId);
+
+      if (charError) throw charError;
+
+      // Remove from local state
+      setCharacters(characters.filter(c => c.id !== characterId));
+      
+      // If this character is selected, clear selection
+      if (selectedCharacter?.id === characterId) {
+        setSelectedCharacter(null);
       }
 
-      // Add character to scene
-      const { error } = await supabase
-        .from('scene_characters')
-        .insert([{
-          scene_id: sceneId,
-          character_id: characterId,
-          position_x: 30 + (Math.random() * 40),
-          position_y: 30 + (Math.random() * 40),
-          scale: 0.8 + (Math.random() * 0.4),
-          expression: 'happy',
-        }]);
-
-      if (error) throw error;
-
-      toast.success('Character added to scene!');
-      await fetchProjectData();
+      toast.success('Character deleted successfully!');
     } catch (error: any) {
-      console.error('Error inserting character:', error);
-      toast.error('Failed to add character to scene');
+      console.error('Error deleting character:', error);
+      toast.error('Failed to delete character. Make sure character is not in any scenes.');
     }
   };
+
+  const addCharacterToScene = async (character: Character, sceneId?: string) => {
+  const targetSceneId = sceneId || activeScene?.id;
+  
+  if (!targetSceneId) {
+    toast.error('Please select a scene first');
+    return;
+  }
+
+  // Find the target scene
+  const targetScene = scenes.find(s => s.id === targetSceneId);
+  if (!targetScene) {
+    toast.error('Scene not found');
+    return;
+  }
+
+  // Check if character is already in this scene
+  const isAlreadyInScene = targetScene.scene_characters?.some(
+    sc => sc.character_id === character.id
+  );
+
+  if (isAlreadyInScene) {
+    toast.error('Character is already in this scene');
+    return;
+  }
+
+  try {
+    // Calculate random position (avoid edges) and convert to integers
+    const position_x = Math.round(20 + Math.random() * 60); // 20-80% as integer
+    const position_y = Math.round(20 + Math.random() * 60); // 20-80% as integer
+    const scale = parseFloat((0.8 + Math.random() * 0.4).toFixed(2)); // 0.8-1.2
+
+    const { error } = await supabase
+      .from('scene_characters')
+      .insert([{
+        scene_id: targetSceneId,
+        character_id: character.id,
+        position_x: position_x,
+        position_y: position_y,
+        scale: scale,
+        expression: 'happy',
+      }]);
+
+    if (error) throw error;
+
+    // Refresh scenes data
+    await fetchProjectData();
+    toast.success(`${character.name} added to scene!`);
+  } catch (error: any) {
+    console.error('Error adding character to scene:', error);
+    toast.error('Failed to add character to scene');
+  }
+};
+
+  const updateCharacterPosition = async (characterId: string, x: number, y: number) => {
+  if (!activeScene) return;
+
+  try {
+    // Round to integers for database
+    const roundedX = Math.round(x);
+    const roundedY = Math.round(y);
+
+    const { error: updateError } = await supabase
+      .from('scene_characters')
+      .update({ 
+        position_x: roundedX, 
+        position_y: roundedY 
+      })
+      .eq('scene_id', activeScene.id)
+      .eq('character_id', characterId);
+
+    if (updateError) throw updateError;
+  } catch (error) {
+    console.error('Failed to update character position:', error);
+  }
+};
 
   const generateScene = async () => {
     try {
@@ -609,10 +716,10 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
         sceneData.storyTitle = parsedStory.title;
         sceneData.storyGenre = parsedStory.genre;
         sceneData.storyContext = parsedStory.summary;
-        sceneData.allCharacters = parsedStory.characters.map(c => c.name);
+        sceneData.allCharacters = parsedStory.characters?.map((c: any) => c.name) || [];
         
         // If we have a matching scene from the story, use its details
-        const matchingStoryScene = parsedStory.scenes.find(s => s.sceneNumber === sceneNumber);
+        const matchingStoryScene = parsedStory.scenes?.find(s => s.sceneNumber === sceneNumber);
         if (matchingStoryScene) {
           sceneData.sceneTitle = matchingStoryScene.title;
           sceneData.sceneLocation = matchingStoryScene.location;
@@ -636,7 +743,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
         // Fallback scene data - generate background
         const fallbackBackground = await generateSceneBackground(
           { sceneNumber, location: sceneDescription, title: sceneDescription }, 
-          parsedStory
+          parsedStory || undefined
         );
         generatedSceneData = {
           description: `Scene ${sceneNumber}: ${sceneDescription || storyPrompt || 'A new scene'}`,
@@ -698,16 +805,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                     .single();
                   
                   if (!existing) {
-                    await supabase
-                      .from('scene_characters')
-                      .insert([{
-                        scene_id: newSceneData.id,
-                        character_id: char.id,
-                        position_x: 20 + (Math.random() * 60),
-                        position_y: 30 + (Math.random() * 40),
-                        scale: 0.8 + (Math.random() * 0.4),
-                        expression: 'happy',
-                      }]);
+                    await addCharacterToScene(char, newSceneData.id);
                   }
                 } catch (err) {
                   // Character might already be in scene, skip
@@ -737,102 +835,114 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
   };
 
   const createCharacterWithAI = async () => {
-    if (!characterName.trim()) {
-      toast.error('Please enter a character name');
-      return;
+  const name = characterName.trim();
+  const desc = characterDescription.trim();
+
+  if (!name) {
+    toast.error('Please enter a character name');
+    return;
+  }
+
+  if (!desc) {
+    toast.error('Please enter a character description');
+    return;
+  }
+
+  setGeneratingCharacter(true);
+
+  try {
+    // Call the API
+    const response = await fetch('/api/ai/character', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        characterName: name,
+        description: desc,
+        genre: storyOptions.genre
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to generate character: ${response.status}`);
     }
 
-    if (!characterDescription.trim()) {
-      toast.error('Please enter a character description');
-      return;
+    const characterData = await response.json();
+
+    // Save character to database
+    const { data: newCharacter, error: characterError } = await supabase
+      .from('characters')
+      .insert([{
+        project_id: projectId,
+        name: characterData.name || name,
+        description: characterData.description || desc,
+        character_type: 'cartoon',
+        image_url: characterData.imageUrl,
+        is_ai_generated: true
+      }])
+      .select()
+      .single();
+
+    if (characterError) throw characterError;
+
+    // Refresh characters list
+    await fetchCharacters();
+    
+    // Clear form and close modal
+    setShowCharacterModal(false);
+    setCharacterName('');
+    setCharacterDescription('');
+    
+    toast.success(`${characterData.name} created successfully!`);
+    
+    // Auto-add to active scene if there is one
+    if (activeScene && newCharacter) {
+      // Small delay to ensure character is saved
+      setTimeout(() => {
+        addCharacterToScene(newCharacter, activeScene.id);
+      }, 500);
     }
-
-    setGeneratingCharacter(true);
-
+  } catch (error: any) {
+    console.error('Character generation error:', error);
+    
+    // Simple fallback - create character without API
     try {
-      const response = await fetch('/api/ai/character', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          characterName: characterName.trim(),
-          description: characterDescription.trim()
-        }),
-      });
-
-      let characterData;
-      if (response.ok) {
-        characterData = await response.json();
-      } else {
-        throw new Error('Failed to generate character');
-      }
-
+      const fallbackImage = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}&backgroundColor=4f46e5&radius=50`;
+      
       const { data: newCharacter, error: characterError } = await supabase
         .from('characters')
         .insert([{
           project_id: projectId,
-          name: characterData.name,
-          description: characterData.description,
+          name: name,
+          description: desc,
           character_type: 'cartoon',
-          image_url: characterData.imageUrl,
+          image_url: fallbackImage,
+          is_ai_generated: false
         }])
         .select()
         .single();
 
       if (characterError) throw characterError;
 
-      await fetchProjectData();
+      await fetchCharacters();
       setShowCharacterModal(false);
       setCharacterName('');
       setCharacterDescription('');
-      toast.success('Character created successfully!');
-    } catch (error: any) {
-      console.error('Character generation error:', error);
-      toast.error(error.message || 'Failed to generate character');
-    } finally {
-      setGeneratingCharacter(false);
+      toast.success(`${name} created!`);
+      
+      // Auto-add to active scene
+      if (activeScene && newCharacter) {
+        setTimeout(() => {
+          addCharacterToScene(newCharacter, activeScene.id);
+        }, 500);
+      }
+    } catch (fallbackError: any) {
+      console.error('Fallback creation error:', fallbackError);
+      toast.error('Failed to create character. Please try again.');
     }
-  };
-
-  const addCharacterToScene = async (characterId: string) => {
-    if (!activeScene) {
-      toast.error('Please select a scene first');
-      return;
-    }
-
-    try {
-      const { error: sceneCharError } = await supabase
-        .from('scene_characters')
-        .insert([{
-          scene_id: activeScene.id,
-          character_id: characterId,
-          position_x: 30 + Math.random() * 40,
-          position_y: 50,
-          expression: 'happy',
-        }]);
-
-      if (sceneCharError) throw sceneCharError;
-
-      fetchProjectData();
-      toast.success('Character added to scene!');
-    } catch (error: any) {
-      console.error('Add character error:', error);
-      toast.error('Failed to add character to scene');
-    }
-  };
-
-  const updateCharacterPosition = async (characterId: string, x: number, y: number) => {
-    try {
-      const { error: updateError } = await supabase
-        .from('scene_characters')
-        .update({ position_x: x, position_y: y })
-        .eq('scene_id', activeScene?.id)
-        .eq('character_id', characterId);
-
-      if (updateError) throw updateError;
-    } catch (error) {
-      console.error('Failed to update character position:', error);
-    }
-  };
+  } finally {
+    setGeneratingCharacter(false);
+  }
+};
 
   const exportAnimation = async () => {
     try {
@@ -902,7 +1012,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
     setShowAudioModal(true);
     
     // If we have parsed story with dialogue, pre-fill with first scene's dialogue
-    if (parsedStory && parsedStory.scenes.length > 0) {
+    if (parsedStory?.scenes && parsedStory.scenes.length > 0) {
       const firstScene = parsedStory.scenes[0];
       if (firstScene.dialogue) {
         // Remove quotes if present
@@ -968,7 +1078,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
 
   const selectDialogueFromScene = (sceneIndex: number) => {
     // Try to get dialogue from parsedStory first
-    if (parsedStory && parsedStory.scenes[sceneIndex]) {
+    if (parsedStory?.scenes?.[sceneIndex]) {
       const parsedScene = parsedStory.scenes[sceneIndex];
       if (parsedScene.dialogue) {
         const dialogue = parsedScene.dialogue.replace(/^["']|["']$/g, '').trim();
@@ -1084,7 +1194,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                 <div>
                   <div className="font-medium">Story Generated!</div>
                   <div className="text-sm opacity-80">
-                    Created {parsedStory?.scenes.length || 0} scenes
+                    Created {parsedStory?.scenes?.length || 0} scenes
                   </div>
                 </div>
               </>
@@ -1124,7 +1234,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
           </div>
           <div className="flex items-center space-x-2">
             <span className="px-3 py-1 bg-purple-600/50 rounded-full text-sm">
-              {parsedStory.scenes.length} Scenes
+              {parsedStory.scenes?.length || 0} Scenes
             </span>
             <button
               onClick={() => setParsedStory(null)}
@@ -1419,57 +1529,83 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                 </button>
               </div>
               
+              {/* Character List with Duplicate/Delete Options */}
               <div className="space-y-3 max-h-64 overflow-y-auto pr-2">
                 {characters.map((character) => (
                   <div
                     key={character.id}
-                    className="flex items-center justify-between p-3 bg-gray-700/30 rounded-lg group hover:bg-gray-700/50 transition"
+                    className="group flex items-center justify-between p-3 bg-gray-700/30 rounded-lg hover:bg-gray-700/50 transition"
                   >
                     <div className="flex items-center space-x-3">
                       <div 
-                        className="h-10 w-10 rounded-full bg-cover bg-center border-2 border-purple-500 shadow-lg"
-                        style={{ backgroundImage: `url(${character.image_url})` }}
+                        className="h-10 w-10 rounded-full bg-cover bg-center border-2 border-purple-500 shadow-lg flex-shrink-0"
+                        style={{ 
+                          backgroundImage: `url(${character.image_url || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default&backgroundColor=4f46e5'})`,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center'
+                        }}
                       />
                       <div>
                         <div className="font-medium">{character.name}</div>
                         <div className="text-xs text-gray-400 truncate max-w-[120px]">
                           {character.description || 'Cartoon Character'}
+                          {character.is_ai_generated && (
+                            <span className="ml-1 text-purple-400">✨</span>
+                          )}
                         </div>
                       </div>
                     </div>
-                    <button
-                      onClick={() => {
-                        if (activeScene) {
-                          addCharacterToScene(character.id);
-                        } else {
-                          toast.error('Select a scene first');
-                        }
-                      }}
-                      className="px-3 py-1 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition opacity-0 group-hover:opacity-100 text-sm"
-                      title="Add to Active Scene"
-                    >
-                      Add to Scene
-                    </button>
-                    {scenes.length > 0 && (
+                    
+                    <div className="flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {/* Add to Scene Dropdown */}
                       <select
                         onChange={(e) => {
-                          if (e.target.value && e.target.value !== 'active') {
-                            insertCharacterIntoScene(character.id, e.target.value);
+                          if (e.target.value) {
+                            addCharacterToScene(character, e.target.value);
                             e.target.value = '';
                           }
                         }}
-                        className="px-2 py-1 bg-gray-800 border border-gray-700 rounded-lg hover:opacity-90 transition opacity-0 group-hover:opacity-100 text-xs"
+                        className="px-2 py-1 bg-gray-800 border border-gray-700 rounded-lg hover:bg-gray-700 transition text-xs"
                         defaultValue=""
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <option value="">Insert into...</option>
+                        <option value="">Add to...</option>
                         {scenes.map((scene) => (
                           <option key={scene.id} value={scene.id}>
                             Scene {scene.scene_number}
                           </option>
                         ))}
+                        {activeScene && (
+                          <option value={activeScene.id}>
+                            Current Scene ({activeScene.scene_number})
+                          </option>
+                        )}
                       </select>
-                    )}
+                      
+                      {/* Duplicate Button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          duplicateCharacter(character);
+                        }}
+                        className="p-1.5 bg-gray-600 rounded hover:bg-gray-500 transition"
+                        title="Duplicate Character"
+                      >
+                        <Copy className="h-3 w-3" />
+                      </button>
+                      
+                      {/* Delete Button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteCharacter(character.id);
+                        }}
+                        className="p-1.5 bg-red-600/50 rounded hover:bg-red-500 transition"
+                        title="Delete Character"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1477,7 +1613,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
               {characters.length === 0 && (
                 <div className="text-center py-4 text-gray-500">
                   <p className="text-sm">No characters yet</p>
-                  {parsedStory && parsedStory.characters.length > 0 ? (
+                  {parsedStory && parsedStory.characters && parsedStory.characters.length > 0 ? (
                     <button
                       onClick={generateCharactersFromStory}
                       className="mt-3 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition text-sm font-medium"
@@ -1491,7 +1627,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
               )}
 
               {/* Generate Characters from Story Button */}
-              {parsedStory && parsedStory.characters.length > 0 && characters.length === 0 && (
+              {parsedStory && parsedStory.characters && parsedStory.characters.length > 0 && characters.length === 0 && (
                 <div className="mt-4 p-3 bg-gray-900/50 rounded-lg border border-gray-700">
                   <p className="text-sm text-gray-400 mb-2">
                     Found {parsedStory.characters.length} characters in your story
@@ -1604,7 +1740,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                     <button
                       onClick={() => {
                         if (characters.length > 0) {
-                          addCharacterToScene(characters[0].id);
+                          addCharacterToScene(characters[0]);
                         } else {
                           toast('Generate characters first');
                         }
@@ -1965,13 +2101,13 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
               </div>
 
               {/* Select Dialogue from Story or Scenes */}
-              {(parsedStory?.scenes.length > 0 || scenes.length > 0) && (
+              {(parsedStory?.scenes && parsedStory.scenes.length > 0 || scenes.length > 0) && (
                 <div className="mb-6 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
                   <h3 className="font-semibold mb-3">Select Dialogue from Scenes</h3>
                   <div className="space-y-2 max-h-40 overflow-y-auto">
                     {scenes.map((dbScene) => {
                       // Find matching parsed scene
-                      const parsedScene = parsedStory?.scenes.find(s => s.sceneNumber === dbScene.scene_number);
+                      const parsedScene = parsedStory?.scenes?.find(s => s.sceneNumber === dbScene.scene_number);
                       const dialogue = parsedScene?.dialogue || 
                         (dbScene.description?.match(/Dialogue:\s*(.+)/i)?.[1] || '');
                       
@@ -2146,15 +2282,23 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                 <textarea
                   value={characterDescription}
                   onChange={(e) => setCharacterDescription(e.target.value)}
-                  placeholder="Describe the character's appearance, personality, and traits... (e.g., A friendly brown bear with a red scarf, loves honey, brave and adventurous)"
-                  className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                  maxLength={500}
+                  placeholder={`Describe the character in detail for AI generation:
+                  
+Example: "A friendly brown bear with a red scarf, loves honey, brave and adventurous"
+                  
+Include:
+• Appearance (species, colors, clothing)
+• Personality traits
+• Age or size
+• Special features or accessories"`}
+                  className="w-full h-48 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+                  maxLength={1000}
                 />
                 <div className="text-xs text-gray-400 mt-1">
-                  {characterDescription.length} / 500 characters
+                  {characterDescription.length} / 1000 characters
                 </div>
                 <p className="text-xs text-gray-500 mt-2">
-                  💡 Tip: Be specific! Include details like appearance, clothing, personality traits, and any special features.
+                  💡 The more detailed your description, the better the AI can generate your character!
                 </p>
               </div>
 
@@ -2172,7 +2316,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                 ) : (
                   <>
                     <Sparkles className="h-4 w-4 mr-2" />
-                    Create Character
+                    Create Character with AI
                   </>
                 )}
               </button>
