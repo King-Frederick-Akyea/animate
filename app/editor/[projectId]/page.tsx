@@ -290,61 +290,114 @@ export default function EditorPage() {
   };
 
   const exportVideo = async () => {
-    if (!projectId || scenes.length === 0) {
-      toast.error('No scenes to export');
-      return;
-    }
+  if (!projectId || scenes.length === 0) {
+    toast.error('No scenes to export');
+    return;
+  }
 
-    setExportProgress({ status: 'exporting', progress: 0 });
-    setShowExportModal(true);
+  setExportProgress({ status: 'exporting', progress: 0 });
+  setShowExportModal(true);
+
+  try {
+    // Simulate progress
+    const progressInterval = setInterval(() => {
+      setExportProgress(prev => ({
+        ...prev,
+        progress: Math.min(prev.progress + 5, 80)
+      }));
+    }, 300);
+
+    let videoBlob: Blob;
 
     try {
-      // Simulate export progress
-      const progressInterval = setInterval(() => {
-        setExportProgress(prev => ({
-          ...prev,
-          progress: Math.min(prev.progress + 10, 90)
-        }));
-      }, 500);
-
-      // Call export API
-      const response = await fetch(`/api/export/video?projectId=${projectId}&format=${exportFormat}&resolution=${exportResolution}`, {
-        method: 'GET'
-      });
-
-      clearInterval(progressInterval);
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Export failed');
-      }
-
-      const data = await response.json();
+      // Try to generate video from actual scenes
+      const { SceneVideoGenerator } = await import('@/utils/videoGenerator');
+      const generator = new SceneVideoGenerator();
       
-      setExportProgress({
-        status: 'completed',
-        progress: 100,
-        downloadUrl: data.downloadUrl
-      });
+      console.log('Generating video with scenes...');
+      
+      // Update progress message
+      setExportProgress(prev => ({
+        ...prev,
+        message: `Rendering ${scenes.length} scenes...`
+      }));
+      
+      // Generate video from scenes
+      videoBlob = await generator.generateVideoFromScenes(
+        scenes,
+        project?.title || 'Untitled Project'
+      );
+      
+      console.log('Video generated successfully');
+      
+    } catch (ffmpegError) {
+      console.warn('FFmpeg scene generation failed:', ffmpegError);
+      
+      // Fallback: create simple video
+      setExportProgress(prev => ({
+        ...prev,
+        message: 'Creating simple preview...'
+      }));
+      
+      const { SceneVideoGenerator } = await import('@/utils/videoGenerator');
+      const generator = new SceneVideoGenerator();
+      videoBlob = await generator.createSimpleSceneVideo(
+        scenes,
+        project?.title || 'Untitled Project'
+      );
+    }
 
-      // If we have a download URL, show success and create download link
-      if (data.downloadUrl) {
-        toast.success('Video exported successfully! Starting download...');
-        
-        setTimeout(() => {
-          const link = document.createElement('a');
-          link.href = data.downloadUrl;
-          link.download = `${project?.title || 'cartoon'}-export.${exportFormat === 'video' ? 'mp4' : 'gif'}`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-        }, 1000);
-      } else {
-        toast.success('Video export started! Check your dashboard for the download link.');
-      }
+    clearInterval(progressInterval);
+    setExportProgress({ status: 'exporting', progress: 95 });
 
-    } catch (error: any) {
-      console.error('Export error:', error);
+    // Determine filename
+    const extension = videoBlob.type.includes('mp4') ? 'mp4' : 
+                     videoBlob.type.includes('webm') ? 'webm' : 'txt';
+    const filename = `${project?.title || 'cartoon'}-export.${extension}`;
+
+    // Download the video
+    const url = window.URL.createObjectURL(videoBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Clean up
+    setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 100);
+    
+    setExportProgress({ status: 'completed', progress: 100});
+    toast.success(`Video exported: ${filename}`);
+
+  } catch (error: any) {
+    console.error('Export error:', error);
+    
+    // Ultimate fallback: create a summary file
+    try {
+      const sceneDetails = scenes.map((scene, index) => 
+        `Scene ${index + 1}: ${scene.description || 'No description'}`
+      ).join('\n');
+      
+      const content = `PROJECT: ${project?.title}\n\n` +
+                     `SCENES (${scenes.length}):\n${sceneDetails}\n\n` +
+                     `Total Duration: ${scenes.reduce((sum, s) => sum + s.duration, 0)}s\n` +
+                     `Export Date: ${new Date().toLocaleString()}`;
+      
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${project?.title || 'cartoon'}-scenes.txt`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      
+      setExportProgress({ status: 'completed', progress: 100 });
+      toast.success('Scene details exported as text file!');
+      
+    } catch (fallbackError) {
       setExportProgress({
         status: 'failed',
         progress: 0,
@@ -352,7 +405,8 @@ export default function EditorPage() {
       });
       toast.error(`Export failed: ${error.message}`);
     }
-  };
+  }
+};
 
   const generateStory = async () => {
     if (!storyPrompt.trim()) {
