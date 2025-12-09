@@ -40,101 +40,81 @@ export class SceneVideoGenerator {
         throw new Error('No frames generated from scenes');
       }
 
-      // Write each frame to FFmpeg file system
+      // Create individual video segments for each scene first
+      console.log(`Creating ${sceneFrames.length} video segments...`);
+      const videoSegments: string[] = [];
+      
       for (let i = 0; i < sceneFrames.length; i++) {
         const frameData = sceneFrames[i];
-        const filename = `frame${i.toString().padStart(4, '0')}.png`;
-        await this.ffmpeg.writeFile(filename, frameData);
-      }
-
-      // Create video from frames using ACTUAL durations
-      let concatText = '';
-      
-      // Create frames.txt for concat demuxer using actual durations
-      for (let i = 0; i < sceneFrames.length; i++) {
-        const filename = `frame${i.toString().padStart(4, '0')}.png`;
+        const frameFilename = `frame${i.toString().padStart(4, '0')}.png`;
+        const segmentFilename = `segment${i.toString().padStart(4, '0')}.mp4`;
+        
+        // Write frame to FFmpeg file system
+        await this.ffmpeg.writeFile(frameFilename, frameData);
+        
         const duration = sceneData[i].duration;
-        concatText += `file '${filename}'\n`;
-        concatText += `duration ${duration}\n`;
-      }
-      
-      await this.ffmpeg.writeFile('frames.txt', new TextEncoder().encode(concatText));
-      
-      let command: string[];
-      const hasAudio = sceneData.some(scene => scene.hasAudio);
-      
-      if (hasAudio) {
-        console.log('Creating video with audio...');
+        const scene = sceneData[i];
         
-        // Write audio files to FFmpeg file system
-        for (let i = 0; i < sceneData.length; i++) {
-          const scene = sceneData[i];
-          if (scene.audioBuffer) {
-            const audioFilename = `audio${i}.wav`;
-            await this.ffmpeg.writeFile(audioFilename, scene.audioBuffer);
-          }
-        }
-        
-        // Create audio concat file with proper timing
-        let audioConcatText = '';
-        let currentTime = 0;
-        
-        for (let i = 0; i < sceneData.length; i++) {
-          const scene = sceneData[i];
-          const duration = scene.duration;
+        // Create individual video segment for this scene
+        if (scene.hasAudio && scene.audioBuffer) {
+          // Write audio file
+          const audioFilename = `audio${i}.wav`;
+          await this.ffmpeg.writeFile(audioFilename, scene.audioBuffer);
           
-          if (scene.audioBuffer) {
-            // Scene has audio
-            audioConcatText += `file 'audio${i}.wav'\n`;
-            audioConcatText += `inpoint 0\n`;
-            audioConcatText += `outpoint ${duration}\n`;
-          } else {
-            // Scene without audio - add silence
-            audioConcatText += `file 'anullsrc=channel_layout=stereo:sample_rate=44100'\n`;
-            audioConcatText += `inpoint 0\n`;
-            audioConcatText += `outpoint ${duration}\n`;
-          }
+          // Create video segment with audio
+          await this.ffmpeg.exec([
+            '-loop', '1',
+            '-i', frameFilename,
+            '-i', audioFilename,
+            '-t', duration.toString(),
+            '-c:v', 'libx264',
+            '-preset', 'medium',
+            '-crf', '23',
+            '-pix_fmt', 'yuv420p',
+            '-vf', 'fps=30,scale=1280:720',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-shortest',
+            segmentFilename
+          ]);
+        } else {
+          // Create video segment without audio
+          await this.ffmpeg.exec([
+            '-loop', '1',
+            '-i', frameFilename,
+            '-t', duration.toString(),
+            '-c:v', 'libx264',
+            '-preset', 'medium',
+            '-crf', '23',
+            '-pix_fmt', 'yuv420p',
+            '-vf', 'fps=30,scale=1280:720',
+            '-an',
+            segmentFilename
+          ]);
         }
         
-        await this.ffmpeg.writeFile('audio_concat.txt', new TextEncoder().encode(audioConcatText));
-        
-        // Create video with audio
-        command = [
-          '-f', 'concat',
-          '-safe', '0',
-          '-i', 'frames.txt',
-          '-f', 'concat',
-          '-safe', '0',
-          '-i', 'audio_concat.txt',
-          '-c:v', 'libx264',
-          '-preset', 'medium',
-          '-crf', '23',
-          '-pix_fmt', 'yuv420p',
-          '-c:a', 'aac',
-          '-b:a', '128k',
-          '-shortest', // Stop when the shortest stream ends
-          '-movflags', '+faststart',
-          'output.mp4'
-        ];
-      } else {
-        console.log('Creating video without audio...');
-        // Create video without audio
-        command = [
-          '-f', 'concat',
-          '-safe', '0',
-          '-i', 'frames.txt',
-          '-c:v', 'libx264',
-          '-preset', 'medium',
-          '-crf', '23',
-          '-pix_fmt', 'yuv420p',
-          '-an', // No audio
-          '-movflags', '+faststart',
-          'output.mp4'
-        ];
+        videoSegments.push(segmentFilename);
+        console.log(`Created segment ${i + 1}/${sceneFrames.length} (${duration}s)`);
       }
       
-      console.log('Running FFmpeg command...');
-      await this.ffmpeg.exec(command);
+      // Create concat file for video segments
+      let concatText = '';
+      for (const segment of videoSegments) {
+        concatText += `file '${segment}'\n`;
+      }
+      
+      await this.ffmpeg.writeFile('concat.txt', new TextEncoder().encode(concatText));
+      
+      // Concatenate all video segments
+      console.log('Concatenating all segments...');
+      await this.ffmpeg.exec([
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'concat.txt',
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        'output.mp4'
+      ]);
       
       // Read the output file
       const data = await this.ffmpeg.readFile('output.mp4');
@@ -144,7 +124,7 @@ export class SceneVideoGenerator {
       const blob = new Blob([arrayBuffer], { type: 'video/mp4' });
       
       // Clean up
-      await this.cleanupFiles(sceneFrames.length, sceneData.length);
+      await this.cleanupFiles(sceneFrames.length, sceneData.length, videoSegments.length);
       
       console.log(`Video generated successfully with ${sceneData.length} scenes`);
       console.log('Scene durations:', sceneData.map((s, i) => `Scene ${i + 1}: ${s.duration}s`));
@@ -476,7 +456,7 @@ export class SceneVideoGenerator {
     return this.canvasToUint8Array(canvas);
   }
 
-  private async cleanupFiles(frameCount: number, audioFileCount: number = 0): Promise<void> {
+  private async cleanupFiles(frameCount: number, audioFileCount: number = 0, segmentCount: number = 0): Promise<void> {
     try {
       // Remove frame files
       for (let i = 0; i < frameCount; i++) {
@@ -490,9 +470,14 @@ export class SceneVideoGenerator {
         await this.ffmpeg.deleteFile(filename).catch(() => {});
       }
       
+      // Remove video segment files
+      for (let i = 0; i < segmentCount; i++) {
+        const filename = `segment${i.toString().padStart(4, '0')}.mp4`;
+        await this.ffmpeg.deleteFile(filename).catch(() => {});
+      }
+      
       // Remove other temporary files
-      await this.ffmpeg.deleteFile('frames.txt').catch(() => {});
-      await this.ffmpeg.deleteFile('audio_concat.txt').catch(() => {});
+      await this.ffmpeg.deleteFile('concat.txt').catch(() => {});
       await this.ffmpeg.deleteFile('output.mp4').catch(() => {});
     } catch (error) {
       console.warn('Cleanup error:', error);

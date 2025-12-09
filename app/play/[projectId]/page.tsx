@@ -120,35 +120,7 @@ export default function PlayPage() {
     }
   };
 
-  const startProgressTimer = useCallback(() => {
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-    }
-
-    progressIntervalRef.current = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 100) {
-          handleNextScene();
-          return 0;
-        }
-        const increment = 100 / (sceneDurationRef.current * 10); // Update every 100ms
-        return Math.min(prev + increment, 100);
-      });
-    }, 100);
-  }, [sceneDurationRef]);
-
-  const stopProgressTimer = useCallback(() => {
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-      progressIntervalRef.current = null;
-    }
-  }, []);
-
-  const handlePlayPause = () => {
-    setIsPlaying(!isPlaying);
-  };
-
-  const handleNextScene = () => {
+  const handleNextScene = useCallback(() => {
     stopProgressTimer();
     setProgress(0);
     
@@ -166,7 +138,36 @@ export default function PlayPage() {
         setCurrentSceneIndex(0);
       }
     }
+  }, [currentSceneIndex, scenes.length, playMode]);
+
+  const startProgressTimer = useCallback(() => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+
+    progressIntervalRef.current = setInterval(() => {
+      setProgress((prev) => {
+        if (prev >= 100) {
+          handleNextScene();
+          return 0;
+        }
+        const increment = 100 / (sceneDurationRef.current * 10); // Update every 100ms
+        return Math.min(prev + increment, 100);
+      });
+    }, 100);
+  }, [handleNextScene]);
+
+  const stopProgressTimer = useCallback(() => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+  }, []);
+
+  const handlePlayPause = () => {
+    setIsPlaying(!isPlaying);
   };
+
 
   const handlePrevScene = () => {
     stopProgressTimer();
@@ -226,11 +227,11 @@ export default function PlayPage() {
   };
 
   // Handle audio ended event
-  const handleAudioEnded = () => {
-    if (isPlaying) {
+  const handleAudioEnded = useCallback(() => {
+    if (isPlaying && playMode === 'all') {
       handleNextScene();
     }
-  };
+  }, [isPlaying, playMode, handleNextScene]);
 
   // Handle audio errors
   const handleAudioError = (error: any) => {
@@ -364,7 +365,8 @@ export default function PlayPage() {
                 onEnded={handleAudioEnded}
                 onError={handleAudioError}
                 onTimeUpdate={handleAudioTimeUpdate}
-                preload="metadata"
+                preload="auto"
+                key={`audio-${currentSceneIndex}`}
               />
             )}
           </>
