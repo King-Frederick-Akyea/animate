@@ -1,87 +1,64 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { Play, Pause, SkipBack, SkipForward, Volume2, Home, Download } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, Home, VolumeX } from 'lucide-react';
 import toast from 'react-hot-toast';
+import type { Scene } from '@/lib/type';
 
 export default function PlayPage() {
   const params = useParams();
   const router = useRouter();
   const projectId = params.projectId as string;
-  
-  const [project, setProject] = useState<any>(null);
-  const [scenes, setScenes] = useState<any[]>([]);
-  const [characters, setCharacters] = useState<any[]>([]);
+
+  const [scenes, setScenes] = useState<Scene[]>([]);
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [isMuted, setIsMuted] = useState(false);
+  
   const audioRef = useRef<HTMLAudioElement>(null);
-  const progressInterval = useRef<NodeJS.Timeout | null>(null);
+  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const sceneDurationRef = useRef<number>(0);
+
+  // Define currentScene after scenes are loaded
+  const currentScene = scenes[currentSceneIndex];
 
   useEffect(() => {
     if (projectId) {
-      fetchProjectData();
+      fetchScenes();
     }
   }, [projectId]);
 
   useEffect(() => {
-    // Load audio when scene changes
-    if (currentScene?.audio_url && audioRef.current) {
-      try {
-        // Check if audio_url is already a data URL or needs conversion
-        let audioData = currentScene.audio_url;
-        
-        // If it's not a data URL, assume it's base64 and add the prefix
-        if (!audioData.startsWith('data:')) {
-          audioData = `data:audio/wav;base64,${audioData}`;
+    // This useEffect handles the playback logic
+    if (currentScene) {
+      sceneDurationRef.current = currentScene.duration;
+      
+      if (isPlaying) {
+        startProgressTimer();
+        if (audioRef.current && currentScene.audio_url) {
+          audioRef.current.play().catch(console.error);
         }
-        
-        audioRef.current.src = audioData;
-        audioRef.current.load();
-      } catch (error) {
-        console.error('Error loading audio:', error);
-      }
-    }
-
-    if (isPlaying) {
-      startProgress();
-      // Play audio if scene has audio
-      if (currentScene?.audio_url && audioRef.current) {
-        audioRef.current.play().catch(err => console.log('Audio play error:', err));
-      }
-    } else {
-      stopProgress();
-      // Pause audio
-      if (audioRef.current) {
-        audioRef.current.pause();
+      } else {
+        stopProgressTimer();
+        if (audioRef.current) {
+          audioRef.current.pause();
+        }
       }
     }
 
     return () => {
-      stopProgress();
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
+      stopProgressTimer();
     };
-  }, [isPlaying, currentSceneIndex, currentScene]);
+  }, [isPlaying, currentSceneIndex, currentScene]); // currentScene is now properly defined
 
-  const fetchProjectData = async () => {
+  const fetchScenes = async () => {
     try {
-      // Fetch project
-      const { data: projectData, error: projectError } = await supabase
-        .from('projects')
-        .select('*')
-        .eq('id', projectId)
-        .single();
-
-      if (projectError) throw projectError;
-      setProject(projectData);
-
-      // Fetch scenes with characters
-      const { data: scenesData, error: scenesError } = await supabase
+      const { data: scenesData, error } = await supabase
         .from('scenes')
         .select(`
           *,
@@ -93,301 +70,345 @@ export default function PlayPage() {
         .eq('project_id', projectId)
         .order('scene_number');
 
-      if (scenesError) throw scenesError;
+      if (error) throw error;
       setScenes(scenesData || []);
       
       if (scenesData && scenesData.length > 0) {
-        setDuration(scenesData[0].duration || 5);
+        setCurrentSceneIndex(0);
       }
-
-      // Fetch all characters
-      const { data: charactersData, error: charactersError } = await supabase
-        .from('characters')
-        .select('*')
-        .eq('project_id', projectId);
-
-      if (charactersError) throw charactersError;
-      setCharacters(charactersData || []);
     } catch (error: any) {
+      console.error('Failed to load scenes:', error);
       toast.error('Failed to load animation');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const startProgress = () => {
-    stopProgress();
-    const sceneDuration = scenes[currentSceneIndex]?.duration || 5;
-    
-    progressInterval.current = setInterval(() => {
+  const startProgressTimer = useCallback(() => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+
+    progressIntervalRef.current = setInterval(() => {
       setProgress((prev) => {
-        const newProgress = prev + 100 / (sceneDuration * 10); // 10 updates per second
-        
-        if (newProgress >= 100) {
-          nextScene();
+        if (prev >= 100) {
+          handleNextScene();
           return 0;
         }
-        
-        return newProgress;
+        const increment = 100 / (sceneDurationRef.current * 10); // Update every 100ms
+        return Math.min(prev + increment, 100);
       });
     }, 100);
-  };
+  }, [sceneDurationRef]);
 
-  const stopProgress = () => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-      progressInterval.current = null;
+  const stopProgressTimer = useCallback(() => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
     }
-  };
+  }, []);
 
-  const togglePlay = () => {
+  const handlePlayPause = () => {
     setIsPlaying(!isPlaying);
   };
 
-  const nextScene = () => {
+  const handleNextScene = () => {
+    stopProgressTimer();
+    setProgress(0);
     if (currentSceneIndex < scenes.length - 1) {
-      setCurrentSceneIndex(currentSceneIndex + 1);
-      setProgress(0);
+      setCurrentSceneIndex(prev => prev + 1);
     } else {
       setIsPlaying(false);
-      setCurrentSceneIndex(0);
-      setProgress(0);
+      toast.success('Animation completed!');
     }
   };
 
-  const prevScene = () => {
+  const handlePrevScene = () => {
+    stopProgressTimer();
+    setProgress(0);
     if (currentSceneIndex > 0) {
-      setCurrentSceneIndex(currentSceneIndex - 1);
-      setProgress(0);
+      setCurrentSceneIndex(prev => prev - 1);
     }
   };
 
-  const handleExport = async () => {
-    toast.loading('Preparing download...');
-    try {
-      // For now, we'll create a mock video file
-      // In production, this would generate an actual video
-      const { error } = await supabase
-        .from('animation_exports')
-        .insert([
-          {
-            project_id: projectId,
-            status: 'completed',
-            video_url: `https://example.com/export-${projectId}.mp4`,
-          },
-        ]);
-
-      if (error) throw error;
-
-      // Create a download link
-      const blob = new Blob(['Mock video file'], { type: 'video/mp4' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${project?.title || 'animation'}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      toast.dismiss();
-      toast.success('Animation exported!');
-    } catch (error: any) {
-      toast.dismiss();
-      toast.error('Export failed');
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newVolume = parseFloat(e.target.value);
+    setVolume(newVolume);
+    if (audioRef.current) {
+      audioRef.current.volume = newVolume;
+    }
+    if (newVolume === 0) {
+      setIsMuted(true);
+    } else {
+      setIsMuted(false);
     }
   };
 
-  const currentScene = scenes[currentSceneIndex];
+  const toggleMute = () => {
+    if (audioRef.current) {
+      if (isMuted) {
+        audioRef.current.volume = volume;
+        setIsMuted(false);
+      } else {
+        audioRef.current.volume = 0;
+        setIsMuted(true);
+      }
+    }
+  };
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white">
-      {/* Header */}
-      <div className="container mx-auto px-6 py-4">
-        <div className="flex justify-between items-center">
-          <div className="flex items-center space-x-4">
-            <button
-              onClick={() => router.push('/dashboard')}
-              className="flex items-center space-x-2 text-gray-300 hover:text-white transition"
-            >
-              <Home className="h-5 w-5" />
-              <span>Dashboard</span>
-            </button>
-            <h1 className="text-2xl font-bold">{project?.title}</h1>
-          </div>
-          <div className="flex items-center space-x-4">
-            <button
-              onClick={handleExport}
-              className="flex items-center space-x-2 px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700 transition"
-            >
-              <Download className="h-4 w-4" />
-              <span>Export MP4</span>
-            </button>
-            <button
-              onClick={() => router.push(`/editor/${projectId}`)}
-              className="px-4 py-2 bg-purple-600 rounded-lg hover:bg-purple-700 transition"
-            >
-              Edit Animation
-            </button>
-          </div>
+  const handleSceneSelect = (index: number) => {
+    stopProgressTimer();
+    setCurrentSceneIndex(index);
+    setProgress(0);
+    setIsPlaying(false);
+  };
+
+  // Handle audio ended event
+  const handleAudioEnded = () => {
+    if (isPlaying) {
+      handleNextScene();
+    }
+  };
+
+  // Handle audio errors
+  const handleAudioError = (error: any) => {
+    console.error('Audio error:', error);
+    toast.error('Failed to play audio');
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-900">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto mb-4"></div>
+          <p className="text-gray-400">Loading animation...</p>
         </div>
       </div>
+    );
+  }
 
-      <div className="container mx-auto px-6 py-8">
-        {/* Animation Canvas */}
-        <div className="relative bg-gray-800 rounded-2xl overflow-hidden mb-8" style={{ height: '70vh' }}>
-          {currentScene ? (
-            <>
-              {/* Background */}
+  if (scenes.length === 0) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-900 text-white p-8">
+        <div className="text-center">
+          <h1 className="text-3xl font-bold mb-4">No Scenes Found</h1>
+          <p className="text-gray-400 mb-8">Create some scenes in the editor first!</p>
+          <button
+            onClick={() => router.push(`/editor/${projectId}`)}
+            className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition font-medium"
+          >
+            Go to Editor
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-black text-white">
+      {/* Animation Canvas */}
+      <div className="relative h-screen bg-black overflow-hidden">
+        {currentScene && (
+          <>
+            {/* Background */}
+            <div
+              className="absolute inset-0 bg-cover bg-center transition-all duration-1000"
+              style={{
+                backgroundImage: currentScene.background_image_url 
+                  ? `url(${currentScene.background_image_url})`
+                  : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                opacity: isPlaying ? 1 : 0.9
+              }}
+            />
+
+            {/* Dark overlay for better character visibility */}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent" />
+
+            {/* Characters */}
+            {currentScene.scene_characters?.map((sceneChar) => (
               <div
-                className="absolute inset-0 bg-cover bg-center"
+                key={sceneChar.id}
+                className="absolute transition-all duration-1000 ease-in-out"
                 style={{
-                  backgroundImage: currentScene.background_image_url 
-                    ? `url(${currentScene.background_image_url})`
-                    : 'linear-gradient(to right, #4f46e5, #7c3aed)'
+                  left: `${sceneChar.position_x}%`,
+                  bottom: `${sceneChar.position_y}%`,
+                  transform: `translate(-50%, 50%) scale(${sceneChar.scale})`,
+                  filter: 'drop-shadow(0 10px 8px rgba(0,0,0,0.5))'
                 }}
               >
-                {/* Overlay gradient */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
-              </div>
-
-              {/* Characters */}
-              {currentScene.scene_characters?.map((sceneChar: any) => (
                 <div
-                  key={sceneChar.id}
-                  className="absolute transition-all duration-500"
+                  className="h-40 w-32 rounded-xl shadow-2xl border-4 border-white/20"
                   style={{
-                    left: `${sceneChar.position_x}%`,
-                    bottom: `${sceneChar.position_y}%`,
-                    transform: `scale(${sceneChar.scale}) translate(-50%, 50%)`,
+                    backgroundImage: sceneChar.characters.image_url 
+                      ? `url(${sceneChar.characters.image_url})`
+                      : 'linear-gradient(to bottom right, #f59e0b, #d97706)',
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
                   }}
-                >
-                  <div className="relative">
-                    {/* Character avatar */}
-                    <div 
-                      className="h-40 w-32 rounded-xl shadow-2xl border-2 border-white/20"
-                      style={{
-                        backgroundImage: sceneChar.characters?.image_url 
-                          ? `url(${sceneChar.characters.image_url})`
-                          : 'linear-gradient(to bottom right, #60a5fa, #a78bfa)',
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center'
-                      }}
-                    />
-                    {/* Character name */}
-                    <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 bg-black/70 px-3 py-1 rounded-lg whitespace-nowrap">
-                      <span className="font-bold">{sceneChar.characters?.name || 'Character'}</span>
-                    </div>
-                  </div>
+                />
+                {/* Character Name */}
+                <div className="absolute -bottom-10 left-1/2 transform -translate-x-1/2 bg-black/70 px-3 py-1 rounded-lg text-sm whitespace-nowrap">
+                  {sceneChar.characters.name}
                 </div>
-              ))}
-
-              {/* Hidden audio element for scene audio */}
-              <audio ref={audioRef} />
-
-              {/* Scene Description */}
-              <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-black/70 backdrop-blur-sm px-6 py-3 rounded-xl max-w-2xl w-full">
-                <p className="text-center text-lg">
-                  Scene {currentScene.scene_number}: {currentScene.description || 'No description'}
-                </p>
               </div>
-            </>
-          ) : (
-            <div className="h-full flex items-center justify-center">
-              <div className="text-center">
-                <p className="text-2xl mb-4">No scenes available</p>
-                <button
-                  onClick={() => router.push(`/editor/${projectId}`)}
-                  className="px-6 py-3 bg-purple-600 rounded-lg hover:bg-purple-700 transition"
-                >
-                  Create Scenes
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+            ))}
 
-        {/* Controls */}
-        <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6">
-          {/* Progress Bar */}
-          <div className="mb-6">
-            <div className="flex justify-between text-sm mb-2">
-              <span>Scene {currentSceneIndex + 1} of {scenes.length}</span>
-              <span>{Math.round(progress)}%</span>
+            {/* Scene Info */}
+            <div className="absolute top-4 left-4 bg-black/70 px-4 py-2 rounded-full backdrop-blur-sm">
+              <span className="font-medium">Scene {currentScene.scene_number} of {scenes.length}</span>
+              {currentScene.audio_url && (
+                <span className="ml-2 text-blue-400">🎵</span>
+              )}
             </div>
-            <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-purple-600 transition-all duration-300"
+
+            {/* Scene Description */}
+            {currentScene.description && (
+              <div className="absolute top-20 left-4 right-4 bg-black/60 backdrop-blur-sm rounded-xl p-4 max-w-md">
+                <p className="text-sm">{currentScene.description}</p>
+              </div>
+            )}
+
+            {/* Progress Bar */}
+            <div className="absolute top-0 left-0 right-0 h-2 bg-gray-800">
+              <div
+                className="h-full bg-gradient-to-r from-purple-600 to-pink-600 transition-all duration-300"
                 style={{ width: `${progress}%` }}
+              />
+            </div>
+
+            {/* Time Indicator */}
+            <div className="absolute top-12 right-4 bg-black/70 px-3 py-1 rounded-full text-sm">
+              {Math.floor((progress / 100) * currentScene.duration)}s / {currentScene.duration}s
+            </div>
+
+            {/* Audio Element */}
+            {currentScene.audio_url && (
+              <audio
+                ref={audioRef}
+                src={currentScene.audio_url}
+                onEnded={handleAudioEnded}
+                onError={handleAudioError}
+                volume={isMuted ? 0 : volume}
+                preload="auto"
+              />
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Controls */}
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 to-transparent p-6 pt-12">
+        <div className="container mx-auto">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={() => router.push('/dashboard')}
+                className="p-3 hover:bg-gray-800 rounded-full transition bg-black/50 backdrop-blur-sm"
+                title="Back to Dashboard"
+              >
+                <Home className="h-6 w-6" />
+              </button>
+              
+              <button
+                onClick={() => router.push(`/editor/${projectId}`)}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
+              >
+                Edit Project
+              </button>
+            </div>
+
+            {/* Playback Controls */}
+            <div className="flex items-center space-x-6">
+              <button
+                onClick={handlePrevScene}
+                disabled={currentSceneIndex === 0}
+                className="p-3 hover:bg-gray-800 rounded-full transition disabled:opacity-50 bg-black/50 backdrop-blur-sm"
+                title="Previous Scene"
+              >
+                <SkipBack className="h-6 w-6" />
+              </button>
+
+              <button
+                onClick={handlePlayPause}
+                className="p-5 bg-white text-black rounded-full hover:bg-gray-200 transition transform hover:scale-105"
+                title={isPlaying ? 'Pause' : 'Play'}
+              >
+                {isPlaying ? (
+                  <Pause className="h-8 w-8" />
+                ) : (
+                  <Play className="h-8 w-8 ml-1" />
+                )}
+              </button>
+
+              <button
+                onClick={handleNextScene}
+                disabled={currentSceneIndex === scenes.length - 1}
+                className="p-3 hover:bg-gray-800 rounded-full transition disabled:opacity-50 bg-black/50 backdrop-blur-sm"
+                title="Next Scene"
+              >
+                <SkipForward className="h-6 w-6" />
+              </button>
+            </div>
+
+            {/* Volume Controls */}
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={toggleMute}
+                className="p-2 hover:bg-gray-800 rounded-full transition"
+                title={isMuted ? 'Unmute' : 'Mute'}
+              >
+                {isMuted ? (
+                  <VolumeX className="h-5 w-5" />
+                ) : (
+                  <Volume2 className="h-5 w-5" />
+                )}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={isMuted ? 0 : volume}
+                onChange={handleVolumeChange}
+                className="w-24 accent-purple-600"
               />
             </div>
           </div>
 
-          {/* Control Buttons */}
-          <div className="flex justify-center items-center space-x-8">
-            <button
-              onClick={prevScene}
-              disabled={currentSceneIndex === 0}
-              className="p-3 bg-gray-700 rounded-full hover:bg-gray-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <SkipBack className="h-6 w-6" />
-            </button>
-
-            <button
-              onClick={togglePlay}
-              className="p-6 bg-purple-600 rounded-full hover:bg-purple-700 transition"
-            >
-              {isPlaying ? (
-                <Pause className="h-8 w-8" />
-              ) : (
-                <Play className="h-8 w-8" />
-              )}
-            </button>
-
-            <button
-              onClick={nextScene}
-              disabled={currentSceneIndex === scenes.length - 1}
-              className="p-3 bg-gray-700 rounded-full hover:bg-gray-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <SkipForward className="h-6 w-6" />
-            </button>
-
-            <button className="p-3 bg-gray-700 rounded-full hover:bg-gray-600 transition">
-              <Volume2 className="h-6 w-6" />
-            </button>
-          </div>
-
-          {/* Scene Thumbnails */}
-          <div className="mt-8">
-            <h3 className="text-lg font-bold mb-4">Scenes</h3>
-            <div className="flex space-x-4 overflow-x-auto pb-4">
+          {/* Scene Selection */}
+          <div className="mt-4">
+            <div className="text-sm text-gray-400 mb-2">
+              Select Scene ({currentSceneIndex + 1} of {scenes.length})
+            </div>
+            <div className="flex space-x-2 overflow-x-auto pb-2">
               {scenes.map((scene, index) => (
                 <button
                   key={scene.id}
-                  onClick={() => {
-                    setCurrentSceneIndex(index);
-                    setProgress(0);
-                    setIsPlaying(false);
-                  }}
-                  className={`flex-shrink-0 w-48 h-32 rounded-xl overflow-hidden relative transition-all ${
-                    currentSceneIndex === index 
-                      ? 'ring-4 ring-purple-500 scale-105' 
-                      : 'opacity-80 hover:opacity-100'
+                  onClick={() => handleSceneSelect(index)}
+                  className={`px-4 py-3 rounded-lg transition flex-shrink-0 min-w-[120px] ${
+                    index === currentSceneIndex
+                      ? 'bg-gradient-to-r from-purple-600 to-pink-600'
+                      : 'bg-gray-800 hover:bg-gray-700'
                   }`}
                 >
-                  <div
-                    className="h-full w-full bg-cover bg-center"
-                    style={{
-                      backgroundImage: scene.background_image_url 
-                        ? `url(${scene.background_image_url})`
-                        : 'linear-gradient(to right, #4f46e5, #7c3aed)'
-                    }}
-                  />
-                  <div className="absolute bottom-0 left-0 right-0 bg-black/70 p-2">
-                    <p className="text-sm font-medium">Scene {scene.scene_number}</p>
-                    <p className="text-xs truncate">{scene.description || 'No description'}</p>
+                  <div className="font-medium">Scene {scene.scene_number}</div>
+                  <div className="text-xs text-gray-300 truncate mt-1">
+                    {scene.description?.substring(0, 20) || 'No description'}
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-xs">
+                    <span>{scene.duration}s</span>
+                    {scene.audio_url && (
+                      <span className="text-blue-400">🎵</span>
+                    )}
                   </div>
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Playback Status */}
+          <div className="mt-4 text-center text-sm text-gray-400">
+            {isPlaying ? 'Playing' : 'Paused'} • Scene {currentSceneIndex + 1} of {scenes.length}
           </div>
         </div>
       </div>

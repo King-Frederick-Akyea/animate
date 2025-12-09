@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { 
@@ -9,57 +9,12 @@ import {
   Upload, Mic, Smile, Zap, Eye, EyeOff,
   Trash2, Copy, RotateCcw, Sparkles,
   Wand2, Bot, Clock, Layers, Film,
-  ChevronDown, ChevronUp, Music, MessageSquare
+  ChevronDown, ChevronUp, Music, MessageSquare,
+  X, Video
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { parseStoryText, ParsedStory } from '@/lib/storyParser';
-
-// Define types for our data
-interface Character {
-  id: string;
-  name: string;
-  description?: string;
-  character_type: string;
-  image_url?: string;
-  project_id: string;
-  created_at?: string;
-  is_ai_generated?: boolean;
-}
-
-interface SceneCharacter {
-  id: string;
-  position_x: number;
-  position_y: number;
-  scale: number;
-  expression: string;
-  characters: Character;
-  character_id: string;
-}
-
-interface Scene {
-  id: string;
-  scene_number: number;
-  description?: string;
-  background_image_url?: string;
-  audio_url?: string;
-  duration: number;
-  animations: any[];
-  scene_characters: SceneCharacter[];
-}
-
-interface Project {
-  id: string;
-  title: string;
-  story_text?: string;
-  updated_at: string;
-}
-
-// AI Generation Options
-interface StoryOptions {
-  genre: string;
-  ageGroup: string;
-  length: 'short' | 'medium' | 'long';
-}
+import type { Character, Scene, Project, StoryOptions, ExportProgress } from '@/lib/type';
 
 export default function EditorPage() {
   const params = useParams();
@@ -103,7 +58,19 @@ export default function EditorPage() {
   const [characterDescription, setCharacterDescription] = useState('');
   const [generatingCharacter, setGeneratingCharacter] = useState(false);
 
-  // Available genres and age groups
+  // Export State - FIXED: Correct type definition
+  const [exportProgress, setExportProgress] = useState<ExportProgress>({
+    status: 'idle',
+    progress: 0
+  });
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'video' | 'gif'>('video');
+  const [exportResolution, setExportResolution] = useState('720p');
+
+  // Real-time character positions
+  const [characterPositions, setCharacterPositions] = useState<Record<string, { x: number, y: number }>>({});
+  const [isDragging, setIsDragging] = useState<string | null>(null);
+
   const genres = [
     'fantasy', 'adventure', 'sci-fi', 'mystery', 'comedy', 
     'fairy tale', 'animal', 'educational', 'superhero', 'historical'
@@ -124,6 +91,15 @@ export default function EditorPage() {
   useEffect(() => {
     if (activeScene) {
       setSceneDescription(activeScene.description || '');
+      // Initialize character positions from active scene
+      const positions: Record<string, { x: number, y: number }> = {};
+      activeScene.scene_characters?.forEach(sceneChar => {
+        positions[sceneChar.character_id] = {
+          x: sceneChar.position_x,
+          y: sceneChar.position_y
+        };
+      });
+      setCharacterPositions(positions);
     }
   }, [activeScene]);
 
@@ -226,6 +202,158 @@ export default function EditorPage() {
     }
   };
 
+  const removeCharacterFromScene = async (sceneCharacterId: string) => {
+    if (!activeScene) return;
+
+    try {
+      const { error } = await supabase
+        .from('scene_characters')
+        .delete()
+        .eq('id', sceneCharacterId);
+
+      if (error) throw error;
+
+      // Update local state immediately
+      const updatedScene = {
+        ...activeScene,
+        scene_characters: activeScene.scene_characters?.filter(sc => sc.id !== sceneCharacterId) || []
+      };
+      setActiveScene(updatedScene);
+      
+      // Update scenes list
+      setScenes(scenes.map(scene => 
+        scene.id === activeScene.id ? updatedScene : scene
+      ));
+
+      toast.success('Character removed from scene');
+    } catch (error: any) {
+      console.error('Error removing character from scene:', error);
+      toast.error('Failed to remove character from scene');
+    }
+  };
+
+  const updateCharacterPosition = async (sceneCharacterId: string, characterId: string, x: number, y: number) => {
+    if (!activeScene) return;
+
+    // Update local state immediately for real-time movement
+    const updatedScene = {
+      ...activeScene,
+      scene_characters: activeScene.scene_characters?.map(sc => 
+        sc.id === sceneCharacterId 
+          ? { ...sc, position_x: x, position_y: y }
+          : sc
+      ) || []
+    };
+    setActiveScene(updatedScene);
+    setCharacterPositions(prev => ({
+      ...prev,
+      [characterId]: { x, y }
+    }));
+
+    // Update database in background
+    try {
+      const { error: updateError } = await supabase
+        .from('scene_characters')
+        .update({ 
+          position_x: Math.round(x), 
+          position_y: Math.round(y) 
+        })
+        .eq('id', sceneCharacterId);
+
+      if (updateError) {
+        console.error('Failed to save position:', updateError);
+      }
+    } catch (error) {
+      console.error('Failed to update character position:', error);
+    }
+  };
+
+  const handleCharacterDragStart = (characterId: string) => {
+    setIsDragging(characterId);
+  };
+
+  const handleCharacterDragEnd = (e: React.DragEvent, sceneChar: any) => {
+    setIsDragging(null);
+    
+    const canvas = document.querySelector('.animation-canvas') as HTMLElement;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((rect.bottom - e.clientY) / rect.height) * 100;
+    
+    // Clamp values between 0-100
+    const clampedX = Math.max(0, Math.min(100, x));
+    const clampedY = Math.max(0, Math.min(100, y));
+    
+    updateCharacterPosition(sceneChar.id, sceneChar.character_id, clampedX, clampedY);
+  };
+
+  const exportVideo = async () => {
+    if (!projectId || scenes.length === 0) {
+      toast.error('No scenes to export');
+      return;
+    }
+
+    setExportProgress({ status: 'exporting', progress: 0 });
+    setShowExportModal(true);
+
+    try {
+      // Simulate export progress
+      const progressInterval = setInterval(() => {
+        setExportProgress(prev => ({
+          ...prev,
+          progress: Math.min(prev.progress + 10, 90)
+        }));
+      }, 500);
+
+      // Call export API
+      const response = await fetch(`/api/export/video?projectId=${projectId}&format=${exportFormat}&resolution=${exportResolution}`, {
+        method: 'GET'
+      });
+
+      clearInterval(progressInterval);
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Export failed');
+      }
+
+      const data = await response.json();
+      
+      setExportProgress({
+        status: 'completed',
+        progress: 100,
+        downloadUrl: data.downloadUrl
+      });
+
+      // If we have a download URL, show success and create download link
+      if (data.downloadUrl) {
+        toast.success('Video exported successfully! Starting download...');
+        
+        setTimeout(() => {
+          const link = document.createElement('a');
+          link.href = data.downloadUrl;
+          link.download = `${project?.title || 'cartoon'}-export.${exportFormat === 'video' ? 'mp4' : 'gif'}`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }, 1000);
+      } else {
+        toast.success('Video export started! Check your dashboard for the download link.');
+      }
+
+    } catch (error: any) {
+      console.error('Export error:', error);
+      setExportProgress({
+        status: 'failed',
+        progress: 0,
+        error: error.message
+      });
+      toast.error(`Export failed: ${error.message}`);
+    }
+  };
+
   const generateStory = async () => {
     if (!storyPrompt.trim()) {
       toast.error('Please enter a story prompt');
@@ -241,7 +369,6 @@ export default function EditorPage() {
     }, 500);
 
     try {
-      // Now make the actual POST request
       const response = await fetch('/api/story', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -253,13 +380,11 @@ export default function EditorPage() {
 
       clearInterval(progressInterval);
 
-      // Check if response is JSON
       const contentType = response.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
         const text = await response.text();
         console.error('Non-JSON response:', text.substring(0, 200));
         
-        // Check if it's HTML (404 page)
         if (text.includes('<!DOCTYPE') || text.includes('<html')) {
           throw new Error(
             'API endpoint not found (404). Make sure the file exists at: app/api/story/route.ts'
@@ -295,11 +420,9 @@ export default function EditorPage() {
 
       setStoryPrompt(data.story);
       
-      // Parse the story with error handling
       let parsed: ParsedStory;
       try {
         parsed = parseStoryText(data.story);
-        // Validate parsed story has scenes
         if (!parsed.scenes || parsed.scenes.length === 0) {
           console.warn('No scenes found in parsed story, using fallback parser');
           const { parseSimpleStory } = await import('@/lib/storyParser');
@@ -313,7 +436,6 @@ export default function EditorPage() {
       
       setParsedStory(parsed);
       
-      // Auto-create scenes from the parsed story
       await autoCreateScenesFromParsedStory(parsed);
       
       setAiStatus('success');
@@ -325,7 +447,6 @@ export default function EditorPage() {
       
       let errorMessage = error.message || 'Failed to generate story';
       
-      // User-friendly error messages
       if (errorMessage.includes('API endpoint not found')) {
         errorMessage = 'API route not found. Please create the file at: app/api/story/route.ts';
       } else if (errorMessage.includes('GROQ_API_KEY') || errorMessage.includes('API key')) {
@@ -364,10 +485,8 @@ export default function EditorPage() {
         const scene = parsed.scenes[i];
         setGeneratedScenes(i + 1);
         
-        // Generate background using story context
         const backgroundUrl = await generateSceneBackground(scene, parsed);
         
-        // Create scene in database
         const sceneDescription = `
 Title: ${scene.title}
 Location: ${scene.location}
@@ -391,14 +510,11 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
         
         if (sceneError) throw sceneError;
 
-        // Create characters for the scene
         await createCharactersForScene(parsed.title || 'Story', scene.characters, newScene.id);
         
-        // Small delay to show progress
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
-      // Refresh all data
       await fetchProjectData();
       
       toast.dismiss(toastId);
@@ -412,7 +528,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
 
   const generateSceneBackground = async (scene: any, storyContext?: ParsedStory): Promise<string> => {
     try {
-      // Call the scene generation API with full context
       const response = await fetch('/api/ai/scene', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -439,7 +554,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
       console.error('Error generating scene background:', error);
     }
 
-    // Fallback: Use location-based images
     const sceneKeywords = `${scene.title} ${scene.location} cartoon background`.toLowerCase();
     
     if (sceneKeywords.includes('forest') || sceneKeywords.includes('jungle') || sceneKeywords.includes('woods')) {
@@ -457,7 +571,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
     } else if (sceneKeywords.includes('garden') || sceneKeywords.includes('flower')) {
       return 'https://images.unsplash.com/photo-1416879595882-3373a0480b5b?w=800&h=600&fit=crop';
     } else {
-      // Create seed from scene details for consistent images
       const seedString = `${scene.sceneNumber || 1}-${scene.location || scene.title}`;
       const seed = seedString.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
       return `https://picsum.photos/seed/${seed}/800/600`;
@@ -465,14 +578,13 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
   };
 
   const createCharactersForScene = async (storyTitle: string, characterNames: string[], sceneId: string) => {
-    for (const charName of characterNames.slice(0, 5)) { // Limit to 5 characters per scene
+    for (const charName of characterNames.slice(0, 5)) {
       const existingChar = characters.find(c => 
         c.name.toLowerCase() === charName.toLowerCase()
       );
       
       if (!existingChar) {
         try {
-          // Create new character
           const { data: newChar, error: charError } = await supabase
             .from('characters')
             .insert([{
@@ -487,7 +599,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
             .single();
           
           if (newChar && !charError) {
-            // Add to scene
             await supabase
               .from('scene_characters')
               .insert([{
@@ -518,13 +629,11 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
       const createdChars: Character[] = [];
 
       for (const storyChar of parsedStory.characters) {
-        // Check if character already exists
         const existingChar = characters.find(c => 
           c.name.toLowerCase() === storyChar.name.toLowerCase()
         );
 
         if (!existingChar) {
-          // Generate character image based on description
           const charSeed = storyChar.name + storyChar.description;
           const imageUrl = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(charSeed)}&backgroundColor=4f46e5&radius=50`;
 
@@ -549,7 +658,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
         }
       }
 
-      // Refresh characters list
       await fetchCharacters();
 
       toast.dismiss(toastId);
@@ -578,7 +686,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
 
       if (error) throw error;
 
-      // Refresh characters list
       await fetchCharacters();
       toast.success('Character duplicated successfully!');
     } catch (error: any) {
@@ -593,7 +700,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
     }
 
     try {
-      // First, delete from scene_characters to handle foreign key constraint
       const { error: sceneCharError } = await supabase
         .from('scene_characters')
         .delete()
@@ -601,7 +707,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
 
       if (sceneCharError) throw sceneCharError;
 
-      // Then delete the character
       const { error: charError } = await supabase
         .from('characters')
         .delete()
@@ -609,10 +714,8 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
 
       if (charError) throw charError;
 
-      // Remove from local state
       setCharacters(characters.filter(c => c.id !== characterId));
       
-      // If this character is selected, clear selection
       if (selectedCharacter?.id === characterId) {
         setSelectedCharacter(null);
       }
@@ -625,100 +728,70 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
   };
 
   const addCharacterToScene = async (character: Character, sceneId?: string) => {
-  const targetSceneId = sceneId || activeScene?.id;
-  
-  if (!targetSceneId) {
-    toast.error('Please select a scene first');
-    return;
-  }
+    const targetSceneId = sceneId || activeScene?.id;
+    
+    if (!targetSceneId) {
+      toast.error('Please select a scene first');
+      return;
+    }
 
-  // Find the target scene
-  const targetScene = scenes.find(s => s.id === targetSceneId);
-  if (!targetScene) {
-    toast.error('Scene not found');
-    return;
-  }
+    const targetScene = scenes.find(s => s.id === targetSceneId);
+    if (!targetScene) {
+      toast.error('Scene not found');
+      return;
+    }
 
-  // Check if character is already in this scene
-  const isAlreadyInScene = targetScene.scene_characters?.some(
-    sc => sc.character_id === character.id
-  );
+    const isAlreadyInScene = targetScene.scene_characters?.some(
+      sc => sc.character_id === character.id
+    );
 
-  if (isAlreadyInScene) {
-    toast.error('Character is already in this scene');
-    return;
-  }
+    if (isAlreadyInScene) {
+      toast.error('Character is already in this scene');
+      return;
+    }
 
-  try {
-    // Calculate random position (avoid edges) and convert to integers
-    const position_x = Math.round(20 + Math.random() * 60); // 20-80% as integer
-    const position_y = Math.round(20 + Math.random() * 60); // 20-80% as integer
-    const scale = parseFloat((0.8 + Math.random() * 0.4).toFixed(2)); // 0.8-1.2
+    try {
+      const position_x = Math.round(20 + Math.random() * 60);
+      const position_y = Math.round(20 + Math.random() * 60);
+      const scale = parseFloat((0.8 + Math.random() * 0.4).toFixed(2));
 
-    const { error } = await supabase
-      .from('scene_characters')
-      .insert([{
-        scene_id: targetSceneId,
-        character_id: character.id,
-        position_x: position_x,
-        position_y: position_y,
-        scale: scale,
-        expression: 'happy',
-      }]);
+      const { error } = await supabase
+        .from('scene_characters')
+        .insert([{
+          scene_id: targetSceneId,
+          character_id: character.id,
+          position_x: position_x,
+          position_y: position_y,
+          scale: scale,
+          expression: 'happy',
+        }]);
 
-    if (error) throw error;
+      if (error) throw error;
 
-    // Refresh scenes data
-    await fetchProjectData();
-    toast.success(`${character.name} added to scene!`);
-  } catch (error: any) {
-    console.error('Error adding character to scene:', error);
-    toast.error('Failed to add character to scene');
-  }
-};
-
-  const updateCharacterPosition = async (characterId: string, x: number, y: number) => {
-  if (!activeScene) return;
-
-  try {
-    // Round to integers for database
-    const roundedX = Math.round(x);
-    const roundedY = Math.round(y);
-
-    const { error: updateError } = await supabase
-      .from('scene_characters')
-      .update({ 
-        position_x: roundedX, 
-        position_y: roundedY 
-      })
-      .eq('scene_id', activeScene.id)
-      .eq('character_id', characterId);
-
-    if (updateError) throw updateError;
-  } catch (error) {
-    console.error('Failed to update character position:', error);
-  }
-};
+      await fetchProjectData();
+      toast.success(`${character.name} added to scene!`);
+    } catch (error: any) {
+      console.error('Error adding character to scene:', error);
+      toast.error('Failed to add character to scene');
+    }
+  };
 
   const generateScene = async () => {
     try {
       const sceneNumber = scenes.length + 1;
       const loadingToast = toast.loading('Generating scene...');
       
-      // Build context from story if available
       const sceneData: any = {
         sceneNumber: sceneNumber,
         prompt: sceneDescription || storyPrompt || 'cartoon scene'
       };
 
-      // Add story context if available
       if (parsedStory) {
         sceneData.storyTitle = parsedStory.title;
         sceneData.storyGenre = parsedStory.genre;
         sceneData.storyContext = parsedStory.summary;
         sceneData.allCharacters = parsedStory.characters?.map((c: any) => c.name) || [];
         
-        // If we have a matching scene from the story, use its details
         const matchingStoryScene = parsedStory.scenes?.find(s => s.sceneNumber === sceneNumber);
         if (matchingStoryScene) {
           sceneData.sceneTitle = matchingStoryScene.title;
@@ -740,7 +813,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
       if (response.ok) {
         generatedSceneData = await response.json();
       } else {
-        // Fallback scene data - generate background
         const fallbackBackground = await generateSceneBackground(
           { sceneNumber, location: sceneDescription, title: sceneDescription }, 
           parsedStory || undefined
@@ -752,7 +824,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
         };
       }
 
-      // Add scene to database
       const { data: newScene, error: sceneError } = await supabase
         .from('scenes')
         .insert([{
@@ -770,12 +841,9 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
 
       toast.dismiss(loadingToast);
       
-      // Refresh data to get the new scene
       await fetchProjectData();
       
-      // Add suggested characters to scene if they exist
       if (generatedSceneData.suggestedCharacters) {
-        // Find the newly created scene
         const { data: newSceneData } = await supabase
           .from('scenes')
           .select('*')
@@ -784,19 +852,16 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
           .single();
         
         if (newSceneData) {
-          // Fetch latest characters
           const { data: latestCharacters } = await supabase
             .from('characters')
             .select('*')
             .eq('project_id', projectId);
           
           if (latestCharacters && latestCharacters.length > 0) {
-            // Add characters to the scene
             for (const charName of generatedSceneData.suggestedCharacters.slice(0, 3)) {
               const char = latestCharacters.find(c => c.name === charName);
               if (char) {
                 try {
-                  // Check if character is already in scene
                   const { data: existing } = await supabase
                     .from('scene_characters')
                     .select('*')
@@ -808,7 +873,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                     await addCharacterToScene(char, newSceneData.id);
                   }
                 } catch (err) {
-                  // Character might already be in scene, skip
                   console.log('Character already in scene or error:', err);
                 }
               }
@@ -828,95 +892,53 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
   };
 
   const generateCharacter = async () => {
-    // Open character generation modal
     setShowCharacterModal(true);
     setCharacterName('');
     setCharacterDescription('');
   };
 
   const createCharacterWithAI = async () => {
-  const name = characterName.trim();
-  const desc = characterDescription.trim();
+    const name = characterName.trim();
+    const desc = characterDescription.trim();
 
-  if (!name) {
-    toast.error('Please enter a character name');
-    return;
-  }
-
-  if (!desc) {
-    toast.error('Please enter a character description');
-    return;
-  }
-
-  setGeneratingCharacter(true);
-
-  try {
-    // Call the API
-    const response = await fetch('/api/ai/character', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        characterName: name,
-        description: desc,
-        genre: storyOptions.genre
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to generate character: ${response.status}`);
+    if (!name) {
+      toast.error('Please enter a character name');
+      return;
     }
 
-    const characterData = await response.json();
-
-    // Save character to database
-    const { data: newCharacter, error: characterError } = await supabase
-      .from('characters')
-      .insert([{
-        project_id: projectId,
-        name: characterData.name || name,
-        description: characterData.description || desc,
-        character_type: 'cartoon',
-        image_url: characterData.imageUrl,
-        is_ai_generated: true
-      }])
-      .select()
-      .single();
-
-    if (characterError) throw characterError;
-
-    // Refresh characters list
-    await fetchCharacters();
-    
-    // Clear form and close modal
-    setShowCharacterModal(false);
-    setCharacterName('');
-    setCharacterDescription('');
-    
-    toast.success(`${characterData.name} created successfully!`);
-    
-    // Auto-add to active scene if there is one
-    if (activeScene && newCharacter) {
-      // Small delay to ensure character is saved
-      setTimeout(() => {
-        addCharacterToScene(newCharacter, activeScene.id);
-      }, 500);
+    if (!desc) {
+      toast.error('Please enter a character description');
+      return;
     }
-  } catch (error: any) {
-    console.error('Character generation error:', error);
-    
-    // Simple fallback - create character without API
+
+    setGeneratingCharacter(true);
+
     try {
-      const fallbackImage = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}&backgroundColor=4f46e5&radius=50`;
-      
+      const response = await fetch('/api/ai/character', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          characterName: name,
+          description: desc,
+          genre: storyOptions.genre
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to generate character: ${response.status}`);
+      }
+
+      const characterData = await response.json();
+
       const { data: newCharacter, error: characterError } = await supabase
         .from('characters')
         .insert([{
           project_id: projectId,
-          name: name,
-          description: desc,
+          name: characterData.name || name,
+          description: characterData.description || desc,
           character_type: 'cartoon',
-          image_url: fallbackImage,
-          is_ai_generated: false
+          image_url: characterData.imageUrl,
+          is_ai_generated: true
         }])
         .select()
         .single();
@@ -924,40 +946,61 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
       if (characterError) throw characterError;
 
       await fetchCharacters();
+      
       setShowCharacterModal(false);
       setCharacterName('');
       setCharacterDescription('');
-      toast.success(`${name} created!`);
       
-      // Auto-add to active scene
+      toast.success(`${characterData.name} created successfully!`);
+      
       if (activeScene && newCharacter) {
         setTimeout(() => {
           addCharacterToScene(newCharacter, activeScene.id);
         }, 500);
       }
-    } catch (fallbackError: any) {
-      console.error('Fallback creation error:', fallbackError);
-      toast.error('Failed to create character. Please try again.');
-    }
-  } finally {
-    setGeneratingCharacter(false);
-  }
-};
-
-  const exportAnimation = async () => {
-    try {
-      const loadingToast = toast.loading('Exporting animation...');
-      
-      // Simulate export
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      toast.dismiss(loadingToast);
-      toast.success('Animation exported successfully!');
     } catch (error: any) {
-      toast.dismiss();
-      console.error('Export error:', error);
-      toast.error('Export failed');
+      console.error('Character generation error:', error);
+      
+      try {
+        const fallbackImage = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}&backgroundColor=4f46e5&radius=50`;
+        
+        const { data: newCharacter, error: characterError } = await supabase
+          .from('characters')
+          .insert([{
+            project_id: projectId,
+            name: name,
+            description: desc,
+            character_type: 'cartoon',
+            image_url: fallbackImage,
+            is_ai_generated: false
+          }])
+          .select()
+          .single();
+
+        if (characterError) throw characterError;
+
+        await fetchCharacters();
+        setShowCharacterModal(false);
+        setCharacterName('');
+        setCharacterDescription('');
+        toast.success(`${name} created!`);
+        
+        if (activeScene && newCharacter) {
+          setTimeout(() => {
+            addCharacterToScene(newCharacter, activeScene.id);
+          }, 500);
+        }
+      } catch (fallbackError: any) {
+        console.error('Fallback creation error:', fallbackError);
+        toast.error('Failed to create character. Please try again.');
+      }
+    } finally {
+      setGeneratingCharacter(false);
     }
+  };
+
+  const exportAnimation = () => {
+    setShowExportModal(true);
   };
 
   const deleteScene = async (sceneId: string) => {
@@ -1007,15 +1050,12 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
     }
   };
 
-  const generateVoiceover = async () => {
-    // Open audio generation modal
+  const generateVoiceover = () => {
     setShowAudioModal(true);
     
-    // If we have parsed story with dialogue, pre-fill with first scene's dialogue
     if (parsedStory?.scenes && parsedStory.scenes.length > 0) {
       const firstScene = parsedStory.scenes[0];
       if (firstScene.dialogue) {
-        // Remove quotes if present
         const dialogue = firstScene.dialogue.replace(/^["']|["']$/g, '').trim();
         setAudioText(dialogue || '');
       }
@@ -1049,35 +1089,48 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
         }),
       });
 
+      // Check if response is JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text();
+        console.error('Non-JSON response:', text.substring(0, 200));
+        throw new Error('Server returned non-JSON response. Check API endpoint.');
+      }
+
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to generate audio');
+        throw new Error(data.error || `HTTP ${response.status}: Failed to generate audio`);
       }
 
       if (!data.success || !data.audio) {
         throw new Error('Invalid response from audio API');
       }
 
-      // Convert base64 to blob URL
-      const audioBlob = new Blob([
-        Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))
-      ], { type: 'audio/wav' });
+      // Handle both base64 and URL responses
+      let audioUrl: string;
+      if (data.audio.startsWith('http')) {
+        audioUrl = data.audio;
+      } else {
+        // Assume it's base64
+        const audioBlob = new Blob([
+          Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))
+        ], { type: 'audio/wav' });
+        audioUrl = URL.createObjectURL(audioBlob);
+      }
       
-      const audioUrl = URL.createObjectURL(audioBlob);
       setGeneratedAudioUrl(audioUrl);
       
       toast.success('Audio generated successfully!');
     } catch (error: any) {
       console.error('Audio generation error:', error);
-      toast.error(error.message || 'Failed to generate audio');
+      toast.error(error.message || 'Failed to generate audio. Check API configuration.');
     } finally {
       setGeneratingAudio(false);
     }
   };
 
   const selectDialogueFromScene = (sceneIndex: number) => {
-    // Try to get dialogue from parsedStory first
     if (parsedStory?.scenes?.[sceneIndex]) {
       const parsedScene = parsedStory.scenes[sceneIndex];
       if (parsedScene.dialogue) {
@@ -1088,10 +1141,8 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
       }
     }
     
-    // Fallback: try to extract from database scene description
     const dbScene = scenes.find(s => s.scene_number === sceneIndex + 1);
     if (dbScene && dbScene.description) {
-      // Try to extract dialogue from description
       const dialogueMatch = dbScene.description.match(/Dialogue:\s*(.+)/i);
       if (dialogueMatch && dialogueMatch[1]) {
         const dialogue = dialogueMatch[1].replace(/^["']|["']$/g, '').trim();
@@ -1105,56 +1156,74 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
   };
 
   const insertAudioIntoScene = async (sceneId: string) => {
-    if (!generatedAudioUrl) {
-      toast.error('No audio generated yet');
-      return;
+  if (!generatedAudioUrl) {
+    toast.error('No audio generated yet');
+    return;
+  }
+
+  try {
+    // If the generatedAudioUrl is a data URL (base64), we need to extract the base64 part
+    let audioData = generatedAudioUrl;
+    
+    // If it's a blob URL, fetch it and convert to base64
+    if (generatedAudioUrl.startsWith('blob:')) {
+      try {
+        const response = await fetch(generatedAudioUrl);
+        if (!response.ok) {
+          throw new Error('Failed to fetch audio blob');
+        }
+        const blob = await response.blob();
+        audioData = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            resolve(reader.result as string);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      } catch (fetchError) {
+        console.error('Error fetching blob URL:', fetchError);
+        toast.error('Failed to process audio file');
+        return;
+      }
+    }
+    
+    // If it's already a data URL, store it directly
+    const { error } = await supabase
+      .from('scenes')
+      .update({ 
+        audio_url: audioData,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', sceneId);
+
+    if (error) {
+      console.error('Supabase error:', error);
+      throw error;
     }
 
-    try {
-      // Convert blob URL to base64 for storage
-      const response = await fetch(generatedAudioUrl);
-      const blob = await response.blob();
+    toast.success('Audio inserted into scene!');
+    
+    // Refresh the scene data
+    if (activeScene?.id === sceneId) {
+      const { data: updatedScene } = await supabase
+        .from('scenes')
+        .select('*')
+        .eq('id', sceneId)
+        .single();
       
-      return new Promise<void>((resolve, reject) => {
-        const reader = new FileReader();
-        
-        reader.onloadend = async () => {
-          try {
-            const base64Audio = reader.result as string;
-            
-            // Save audio URL to scene
-            const { error } = await supabase
-              .from('scenes')
-              .update({ 
-                audio_url: base64Audio,
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', sceneId);
-
-            if (error) throw error;
-
-            toast.success('Audio inserted into scene!');
-            await fetchProjectData();
-            resolve();
-          } catch (error: any) {
-            console.error('Error inserting audio:', error);
-            toast.error('Failed to insert audio into scene');
-            reject(error);
-          }
-        };
-
-        reader.onerror = () => {
-          toast.error('Failed to read audio file');
-          reject(new Error('Failed to read audio'));
-        };
-
-        reader.readAsDataURL(blob);
-      });
-    } catch (error: any) {
-      console.error('Error inserting audio:', error);
-      toast.error('Failed to insert audio into scene');
+      if (updatedScene) {
+        setActiveScene(updatedScene);
+        setScenes(scenes.map(scene => 
+          scene.id === sceneId ? updatedScene : scene
+        ));
+      }
     }
-  };
+  } catch (error: any) {
+    console.error('Error inserting audio:', error);
+    toast.error('Failed to insert audio into scene. Please try again.');
+  }
+};
 
   // Render AI Status Indicator
   const renderAIStatus = () => {
@@ -1216,6 +1285,63 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
     );
   };
 
+  // Render Export Status - FIXED: Proper type checking
+  const renderExportStatus = () => {
+    if (exportProgress.status === 'idle') return null;
+
+    return (
+      <div className="fixed top-4 right-4 z-50">
+        <div className={`p-4 rounded-lg shadow-lg border ${
+          exportProgress.status === 'exporting' ? 'bg-blue-900/90 border-blue-700' :
+          exportProgress.status === 'completed' ? 'bg-green-900/90 border-green-700' :
+          'bg-red-900/90 border-red-700'
+        }`}>
+          <div className="flex items-center space-x-3">
+            {exportProgress.status === 'exporting' && (
+              <>
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                <div>
+                  <div className="font-medium">Exporting Video...</div>
+                  <div className="text-sm opacity-80">
+                    This may take a minute
+                  </div>
+                  <div className="w-48 h-2 bg-gray-700 rounded-full mt-2 overflow-hidden">
+                    <div 
+                      className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300"
+                      style={{ width: `${exportProgress.progress}%` }}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+            {exportProgress.status === 'completed' && (
+              <>
+                <Video className="h-5 w-5 text-green-400" />
+                <div>
+                  <div className="font-medium">Export Complete!</div>
+                  <div className="text-sm opacity-80">
+                    Video download started
+                  </div>
+                </div>
+              </>
+            )}
+            {exportProgress.status === 'failed' && (
+              <>
+                <Video className="h-5 w-5 text-red-400" />
+                <div>
+                  <div className="font-medium">Export Failed</div>
+                  <div className="text-sm opacity-80">
+                    {exportProgress.error || 'Unknown error'}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Render story summary
   const renderStorySummary = () => {
     if (!parsedStory || !parsedStory.title) return null;
@@ -1263,6 +1389,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
     <div className="min-h-screen bg-gray-900 text-white">
       {/* AI Status Overlay */}
       {renderAIStatus()}
+      {renderExportStatus()}
 
       {/* Top Bar */}
       <div className="bg-gray-800/90 backdrop-blur-sm border-b border-gray-700 sticky top-0 z-40">
@@ -1468,8 +1595,11 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                           </div>
                           Scene {scene.scene_number}
                         </div>
-                        <div className="text-xs text-gray-400">
+                        <div className="text-xs text-gray-400 flex items-center">
                           {scene.duration}s
+                          {scene.audio_url && (
+                            <Music className="h-3 w-3 ml-2 text-blue-400" />
+                          )}
                         </div>
                       </div>
                       <div className="text-sm text-gray-300 truncate mt-1 pl-8">
@@ -1675,7 +1805,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
               </div>
 
               {/* Animation Canvas */}
-              <div className="relative bg-gray-900 border-2 border-gray-700 rounded-lg h-96 mb-4 overflow-hidden shadow-2xl">
+              <div className="relative bg-gray-900 border-2 border-gray-700 rounded-lg h-96 mb-4 overflow-hidden shadow-2xl animation-canvas">
                 {activeScene ? (
                   <div className="h-full">
                     {/* Background */}
@@ -1696,45 +1826,57 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                     </div>
 
                     {/* Draggable Characters */}
-                    {activeScene.scene_characters?.map((sceneChar) => (
-                      <div
-                        key={sceneChar.id}
-                        className="absolute cursor-move transition-all duration-200 hover:scale-105 hover:z-10"
-                        style={{
-                          left: `${sceneChar.position_x}%`,
-                          bottom: `${sceneChar.position_y}%`,
-                          transform: `translate(-50%, 50%) scale(${sceneChar.scale})`,
-                        }}
-                        draggable
-                        onDragEnd={(e) => {
-                          const rect = e.currentTarget.parentElement?.getBoundingClientRect();
-                          if (rect) {
-                            const x = ((e.clientX - rect.left) / rect.width) * 100;
-                            const y = ((rect.bottom - e.clientY) / rect.height) * 100;
-                            updateCharacterPosition(sceneChar.characters.id, x, y);
-                          }
-                        }}
-                      >
-                        <div className="relative group">
-                          <div 
-                            className="h-32 w-24 rounded-xl shadow-2xl border-2 border-white/20 group-hover:border-yellow-400 transition-all duration-200"
-                            style={{
-                              backgroundImage: sceneChar.characters.image_url 
-                                ? `url(${sceneChar.characters.image_url})`
-                                : 'linear-gradient(to bottom right, #f59e0b, #d97706)',
-                              backgroundSize: 'cover',
-                              backgroundPosition: 'center'
-                            }}
-                          />
-                          <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 bg-black/80 px-3 py-1 rounded text-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
-                            {sceneChar.characters.name}
-                          </div>
-                          <div className="absolute -top-2 -right-2 bg-purple-600 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Move className="h-3 w-3" />
+                    {activeScene.scene_characters?.map((sceneChar) => {
+                      // Use local state position if available, otherwise use database position
+                      const position = characterPositions[sceneChar.character_id] || {
+                        x: sceneChar.position_x,
+                        y: sceneChar.position_y
+                      };
+
+                      return (
+                        <div
+                          key={sceneChar.id}
+                          className="absolute cursor-move transition-all duration-200 hover:scale-105 hover:z-10"
+                          style={{
+                            left: `${position.x}%`,
+                            bottom: `${position.y}%`,
+                            transform: `translate(-50%, 50%) scale(${sceneChar.scale})`,
+                            opacity: isDragging === sceneChar.id ? 0.8 : 1
+                          }}
+                          draggable
+                          onDragStart={() => handleCharacterDragStart(sceneChar.id)}
+                          onDragEnd={(e) => handleCharacterDragEnd(e, sceneChar)}
+                          onDragOver={(e) => e.preventDefault()}
+                        >
+                          <div className="relative group">
+                            <div 
+                              className="h-32 w-24 rounded-xl shadow-2xl border-2 border-white/20 group-hover:border-yellow-400 transition-all duration-200"
+                              style={{
+                                backgroundImage: sceneChar.characters.image_url 
+                                  ? `url(${sceneChar.characters.image_url})`
+                                  : 'linear-gradient(to bottom right, #f59e0b, #d97706)',
+                                backgroundSize: 'cover',
+                                backgroundPosition: 'center'
+                              }}
+                            />
+                            {/* Delete Button */}
+                            <button
+                              onClick={() => removeCharacterFromScene(sceneChar.id)}
+                              className="absolute -top-2 -left-2 bg-red-600 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700 z-20"
+                              title="Remove from scene"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                            <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 bg-black/80 px-3 py-1 rounded text-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
+                              {sceneChar.characters.name}
+                            </div>
+                            <div className="absolute -top-2 -right-2 bg-purple-600 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <Move className="h-3 w-3" />
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
 
                     {/* Add Character Button */}
                     <button
@@ -1745,7 +1887,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                           toast('Generate characters first');
                         }
                       }}
-                      className="absolute bottom-6 right-6 p-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-full hover:opacity-90 transition shadow-xl hover:scale-110"
+                      className="absolute bottom-6 right-6 p-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-full hover:opacity-90 transition shadow-xl hover:scale-110 z-10"
                       title="Add Character"
                     >
                       <Plus className="h-6 w-6" />
@@ -1929,7 +2071,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                               if (error) {
                                 console.error('Update background error:', error);
                               } else {
-                                fetchProjectData(); // Refresh to show new background
+                                fetchProjectData();
                               }
                             });
                         }}
@@ -1948,36 +2090,44 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                   <div>
                     <label className="block text-sm text-gray-400 mb-2">Characters in Scene</label>
                     <div className="space-y-2 max-h-48 overflow-y-auto">
-                      {activeScene.scene_characters?.map((sceneChar) => (
-                        <div key={sceneChar.id} className="flex items-center justify-between p-2 bg-gray-700/50 rounded-lg">
-                          <div className="flex items-center space-x-2">
-                            <div 
-                              className="h-8 w-8 rounded-full bg-cover bg-center"
-                              style={{ backgroundImage: `url(${sceneChar.characters.image_url})` }}
-                            />
-                            <div>
-                              <div className="font-medium text-sm">{sceneChar.characters.name}</div>
-                              <div className="text-xs text-gray-400">
-                                X: {Math.round(sceneChar.position_x)}% Y: {Math.round(sceneChar.position_y)}%
+                      {activeScene.scene_characters?.map((sceneChar) => {
+                        const position = characterPositions[sceneChar.character_id] || {
+                          x: sceneChar.position_x,
+                          y: sceneChar.position_y
+                        };
+                        
+                        return (
+                          <div key={sceneChar.id} className="flex items-center justify-between p-2 bg-gray-700/50 rounded-lg">
+                            <div className="flex items-center space-x-2">
+                              <div 
+                                className="h-8 w-8 rounded-full bg-cover bg-center"
+                                style={{ backgroundImage: `url(${sceneChar.characters.image_url})` }}
+                              />
+                              <div>
+                                <div className="font-medium text-sm">{sceneChar.characters.name}</div>
+                                <div className="text-xs text-gray-400">
+                                  X: {Math.round(position.x)}% Y: {Math.round(position.y)}%
+                                </div>
                               </div>
                             </div>
+                            <div className="flex space-x-1">
+                              <button 
+                                className="p-1 bg-gray-600 rounded hover:bg-gray-500"
+                                title="Change Expression"
+                              >
+                                <Smile className="h-3 w-3" />
+                              </button>
+                              <button 
+                                className="p-1 bg-red-600/50 rounded hover:bg-red-500"
+                                onClick={() => removeCharacterFromScene(sceneChar.id)}
+                                title="Remove from Scene"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex space-x-1">
-                            <button 
-                              className="p-1 bg-gray-600 rounded hover:bg-gray-500"
-                              title="Change Expression"
-                            >
-                              <Smile className="h-3 w-3" />
-                            </button>
-                            <button 
-                              className="p-1 bg-gray-600 rounded hover:bg-gray-500"
-                              title="Add Voice"
-                            >
-                              <Mic className="h-3 w-3" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -2066,17 +2216,156 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                   <span>Rebuild Scenes</span>
                 </button>
                 <button 
-                  onClick={() => toast.success('Coming soon: Export with voiceover!')}
+                  onClick={exportAnimation}
                   className="w-full py-2 bg-gradient-to-r from-green-600 to-emerald-600 rounded-lg hover:opacity-90 transition flex items-center justify-center space-x-2"
                 >
-                  <MessageSquare className="h-4 w-4" />
-                  <span>Export with Audio</span>
+                  <Video className="h-4 w-4" />
+                  <span>Export as Video</span>
                 </button>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Export Modal - FIXED: Proper type checking */}
+      {showExportModal && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-md">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold flex items-center space-x-2">
+                  <Video className="h-6 w-6" />
+                  <span>Export Animation</span>
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowExportModal(false);
+                    setExportProgress({ status: 'idle', progress: 0 });
+                  }}
+                  className="p-2 hover:bg-gray-700 rounded-lg transition"
+                >
+                  <span className="text-2xl">&times;</span>
+                </button>
+              </div>
+
+              {exportProgress.status === 'exporting' ? (
+                <div className="text-center py-8">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto mb-4"></div>
+                  <h3 className="text-lg font-medium mb-2">Exporting your animation...</h3>
+                  <p className="text-gray-400 mb-4">This may take a minute depending on the length</p>
+                  <div className="w-full bg-gray-700 rounded-full h-2">
+                    <div 
+                      className="bg-gradient-to-r from-purple-600 to-pink-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${exportProgress.progress}%` }}
+                    />
+                  </div>
+                  <p className="text-sm text-gray-400 mt-2">{exportProgress.progress}% complete</p>
+                </div>
+              ) : exportProgress.status === 'completed' ? (
+                <div className="text-center py-8">
+                  <div className="w-16 h-16 bg-green-600/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Download className="h-8 w-8 text-green-400" />
+                  </div>
+                  <h3 className="text-lg font-medium mb-2">Export Complete!</h3>
+                  <p className="text-gray-400 mb-6">Your video is ready to download</p>
+                  {exportProgress.downloadUrl && (
+                    <a
+                      href={exportProgress.downloadUrl}
+                      download
+                      className="block w-full py-3 bg-gradient-to-r from-green-600 to-emerald-600 rounded-lg hover:opacity-90 transition font-medium"
+                    >
+                      Download Video
+                    </a>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {/* Format Selection */}
+                  <div className="mb-6">
+                    <label className="block text-sm font-medium mb-2">Export Format</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setExportFormat('video')}
+                        className={`py-3 rounded-lg transition flex flex-col items-center justify-center ${
+                          exportFormat === 'video'
+                            ? 'bg-gradient-to-r from-purple-600 to-pink-600'
+                            : 'bg-gray-700 hover:bg-gray-600'
+                        }`}
+                      >
+                        <Video className="h-6 w-6 mb-1" />
+                        <span className="text-sm">Video (MP4)</span>
+                      </button>
+                      <button
+                        onClick={() => setExportFormat('gif')}
+                        className={`py-3 rounded-lg transition flex flex-col items-center justify-center ${
+                          exportFormat === 'gif'
+                            ? 'bg-gradient-to-r from-purple-600 to-pink-600'
+                            : 'bg-gray-700 hover:bg-gray-600'
+                        }`}
+                      >
+                        <Image className="h-6 w-6 mb-1" />
+                        <span className="text-sm">Animated GIF</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Resolution Selection */}
+                  <div className="mb-6">
+                    <label className="block text-sm font-medium mb-2">Resolution</label>
+                    <select
+                      value={exportResolution}
+                      onChange={(e) => setExportResolution(e.target.value)}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value="480p">480p (SD)</option>
+                      <option value="720p">720p (HD)</option>
+                      <option value="1080p">1080p (Full HD)</option>
+                    </select>
+                  </div>
+
+                  {/* Export Summary */}
+                  <div className="mb-6 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+                    <h3 className="font-medium mb-2">Export Summary</h3>
+                    <div className="space-y-1 text-sm text-gray-300">
+                      <div className="flex justify-between">
+                        <span>Project:</span>
+                        <span>{project?.title}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Total Scenes:</span>
+                        <span>{scenes.length}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Total Duration:</span>
+                        <span>{scenes.reduce((acc, scene) => acc + scene.duration, 0)} seconds</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Format:</span>
+                        <span>{exportFormat === 'video' ? 'MP4 Video' : 'Animated GIF'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Resolution:</span>
+                        <span>{exportResolution}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Export Button */}
+                  <button
+                    onClick={exportVideo}
+                    disabled={scenes.length === 0 || exportProgress.status === 'exporting'}
+                    className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center font-medium"
+                  >
+                    <Video className="h-5 w-5 mr-2" />
+                    Start Export
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Audio Generation Modal */}
       {showAudioModal && (
@@ -2106,7 +2395,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                   <h3 className="font-semibold mb-3">Select Dialogue from Scenes</h3>
                   <div className="space-y-2 max-h-40 overflow-y-auto">
                     {scenes.map((dbScene) => {
-                      // Find matching parsed scene
                       const parsedScene = parsedStory?.scenes?.find(s => s.sceneNumber === dbScene.scene_number);
                       const dialogue = parsedScene?.dialogue || 
                         (dbScene.description?.match(/Dialogue:\s*(.+)/i)?.[1] || '');
