@@ -32,6 +32,7 @@
 ## 🎯 Features
 
 ### 🎨 AI Story Generation
+
 - **Intelligent Story Creation**: Generate complete stories from simple prompts
 - **Customizable Parameters**: Control genre, age group, and story length
 - **Structured Output**: Automatically parses stories into scenes with dialogue
@@ -39,6 +40,7 @@
 - **Rate Limiting**: Built-in protection against API abuse
 
 ### 👥 Smart Character Creation
+
 - **AI-Powered Character Design**: Describe your character, AI generates the image
 - **DiceBear Integration**: Automatic avatar generation with multiple styles
 - **Character Management**: Duplicate, delete, and organize characters
@@ -46,6 +48,7 @@
 - **Visual Customization**: Adjust scale, position, and expressions
 
 ### 🏞️ Intelligent Scene Generation
+
 - **Context-Aware Backgrounds**: Scenes match your story's locations and genre
 - **Unsplash Integration**: High-quality background images
 - **Location-Based Selection**: Automatically selects appropriate backgrounds (forest, castle, beach, etc.)
@@ -53,6 +56,7 @@
 - **Manual Override**: Generate custom scenes with specific descriptions
 
 ### 🔊 Audio & Voiceover
+
 - **Text-to-Speech**: Convert dialogue to natural-sounding voiceovers
 - **Multiple Voices**: Choose from various AI voices (Groq TTS)
 - **Scene-Specific Audio**: Attach audio to individual scenes
@@ -60,6 +64,7 @@
 - **Audio Playback**: Preview audio before adding to scenes
 
 ### 🎬 Animation & Playback
+
 - **Real-time Preview**: Watch your animation as you build it
 - **Scene Transitions**: Smooth transitions between scenes
 - **Character Animation**: Characters positioned and scaled in scenes
@@ -67,6 +72,7 @@
 - **All Scenes Mode**: Automatically play through entire story
 
 ### 📤 Video Export
+
 - **MP4 Export**: High-quality video output (720p, 1080p)
 - **FFmpeg Integration**: Professional video encoding using FFmpeg.wasm
 - **Audio Synchronization**: Perfect audio-video sync
@@ -74,6 +80,7 @@
 - **Progress Tracking**: Real-time export progress with detailed status
 
 ### 💾 Project Management
+
 - **Save & Load**: Persist projects in Supabase database
 - **Project Dashboard**: View and manage all your projects
 - **Auto-save**: Automatic saving of changes
@@ -81,6 +88,7 @@
 - **Data Persistence**: All scenes, characters, and audio saved securely
 
 ### 🎨 Modern UI/UX
+
 - **Responsive Design**: Works on desktop, tablet, and mobile
 - **Dark Theme**: Beautiful dark mode interface
 - **Drag & Drop**: Intuitive character positioning
@@ -92,6 +100,7 @@
 ## 🛠️ Tech Stack
 
 ### Frontend
+
 - **Framework**: [Next.js 16](https://nextjs.org/) (App Router)
 - **Language**: [TypeScript](https://www.typescriptlang.org/)
 - **Styling**: [Tailwind CSS 4](https://tailwindcss.com/)
@@ -101,13 +110,15 @@
 - **Notifications**: [React Hot Toast](https://react-hot-toast.com/)
 
 ### Backend & Database
+
 - **Backend**: Next.js API Routes
 - **Database**: [Supabase](https://supabase.com/) (PostgreSQL)
 - **Authentication**: Supabase Auth
 - **Storage**: Supabase Storage (for future media storage)
 
 ### AI & ML Services
-- **Story Generation**: 
+
+- **Story Generation**:
   - [Groq API](https://console.groq.com/) (Primary - Llama models)
   - [Hugging Face](https://huggingface.co/) (Fallback)
 - **Text-to-Speech**: [Groq TTS](https://console.groq.com/) (PlayAI TTS)
@@ -115,11 +126,13 @@
 - **Image Search**: [Unsplash API](https://unsplash.com/developers) (Optional)
 
 ### Video Processing
+
 - **Video Encoding**: [FFmpeg.wasm](https://ffmpegwasm.netlify.app/)
 - **Format**: MP4 (H.264/AAC)
 - **Resolution**: 480p, 720p, 1080p
 
 ### Development Tools
+
 - **Package Manager**: npm
 - **Linting**: ESLint
 - **Type Checking**: TypeScript
@@ -140,12 +153,14 @@
 ### Installation
 
 1. **Clone the repository**
+
    ```bash
    git clone https://github.com/yourusername/animate.git
    cd animate
    ```
 
 2. **Install dependencies**
+
    ```bash
    npm install
    # or
@@ -153,8 +168,9 @@
    ```
 
 3. **Set up environment variables**
-   
+
    Create a `.env.local` file in the root directory:
+
    ```env
    # Supabase Configuration (Required)
    NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
@@ -171,7 +187,7 @@
    ```
 
 4. **Set up Supabase Database**
-   
+
    Run these SQL commands in your Supabase SQL Editor:
 
    ```sql
@@ -232,13 +248,13 @@
    -- Create policies (adjust based on your auth needs)
    CREATE POLICY "Users can view own projects" ON projects
      FOR SELECT USING (auth.uid() = user_id);
-   
+
    CREATE POLICY "Users can create projects" ON projects
      FOR INSERT WITH CHECK (auth.uid() = user_id);
-   
+
    CREATE POLICY "Users can update own projects" ON projects
      FOR UPDATE USING (auth.uid() = user_id);
-   
+
    CREATE POLICY "Users can delete own projects" ON projects
      FOR DELETE USING (auth.uid() = user_id);
 
@@ -248,18 +264,20 @@
 
 5. **Get API Keys**
 
-   - **Groq API Key**: 
+   - **Groq API Key**:
+
      1. Visit [console.groq.com](https://console.groq.com/)
      2. Sign up for a free account
      3. Navigate to API Keys section
      4. Create a new API key
      5. Accept terms for `playai-tts` model if using TTS
-   
+
    - **Hugging Face Token** (Optional):
+
      1. Visit [huggingface.co](https://huggingface.co/)
      2. Create account and go to Settings → Access Tokens
      3. Create a new token with read permissions
-   
+
    - **Unsplash Access Key** (Optional):
      1. Visit [unsplash.com/developers](https://unsplash.com/developers)
      2. Create a developer account
@@ -267,6 +285,7 @@
      4. Copy your Access Key
 
 6. **Run the development server**
+
    ```bash
    npm run dev
    # or
@@ -274,7 +293,7 @@
    ```
 
 7. **Open your browser**
-   
+
    Navigate to [http://localhost:3000](http://localhost:3000)
 
 ---
@@ -284,11 +303,13 @@
 ### Creating Your First Animation
 
 1. **Create a New Project**
+
    - Click "New Project" on the dashboard
    - Enter a project name
    - You'll be redirected to the editor
 
 2. **Generate a Story**
+
    - Enter a story prompt (e.g., "A story about a brave bear and a friendly bee")
    - Optionally customize:
      - **Genre**: Fantasy, Adventure, Sci-Fi, etc.
@@ -298,17 +319,20 @@
    - Wait for AI to create your story (usually 10-30 seconds)
 
 3. **Review Generated Scenes**
+
    - The story automatically creates scenes with backgrounds
    - Characters are automatically added to scenes
    - Review each scene in the scene list
 
 4. **Customize Characters**
+
    - Click "Generate Character with AI"
    - Enter character name and detailed description
    - AI generates a character image matching your description
    - Drag characters to reposition in scenes
 
 5. **Add Audio**
+
    - Click "Generate Voiceover" button
    - Select dialogue from a scene or enter custom text
    - Choose a voice
@@ -316,6 +340,7 @@
    - Click "Insert into Scene" to attach audio
 
 6. **Preview Animation**
+
    - Click "Play" to preview the current scene
    - Use playback controls to navigate scenes
    - Click "Play All Scenes" to watch the full animation
@@ -387,6 +412,7 @@ animate/
 **Endpoint**: `POST /api/story`
 
 **Request Body**:
+
 ```json
 {
   "prompt": "A story about a brave bear",
@@ -397,6 +423,7 @@ animate/
 ```
 
 **Response**:
+
 ```json
 {
   "success": true,
@@ -410,6 +437,7 @@ animate/
 **Endpoint**: `POST /api/audio/speech`
 
 **Request Body**:
+
 ```json
 {
   "text": "Hello, this is a test",
@@ -419,6 +447,7 @@ animate/
 ```
 
 **Response**:
+
 ```json
 {
   "success": true,
@@ -433,6 +462,7 @@ animate/
 **Endpoint**: `POST /api/ai/character`
 
 **Request Body**:
+
 ```json
 {
   "characterName": "Brave Bear",
@@ -441,6 +471,7 @@ animate/
 ```
 
 **Response**:
+
 ```json
 {
   "name": "Brave Bear",
@@ -454,6 +485,7 @@ animate/
 **Endpoint**: `POST /api/ai/scene`
 
 **Request Body**:
+
 ```json
 {
   "sceneNumber": 1,
@@ -471,6 +503,7 @@ animate/
 ### Deploy to Vercel (Recommended)
 
 1. **Push to GitHub**
+
    ```bash
    git add .
    git commit -m "Initial commit"
@@ -478,6 +511,7 @@ animate/
    ```
 
 2. **Import to Vercel**
+
    - Visit [vercel.com](https://vercel.com)
    - Click "New Project"
    - Import your GitHub repository
@@ -496,6 +530,7 @@ animate/
 ### Deploy to Other Platforms
 
 The app can be deployed to any platform supporting Next.js:
+
 - **Netlify**: Use Netlify's Next.js plugin
 - **Railway**: Connect GitHub repo
 - **AWS Amplify**: Import from GitHub
@@ -528,13 +563,13 @@ npm run lint
 
 All environment variables should be set in `.env.local`:
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `NEXT_PUBLIC_SUPABASE_URL` | ✅ | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ | Supabase anonymous key |
-| `GROQ_API_KEY` | ✅ | Groq API key for story/TTS |
-| `HUGGINGFACE_API_TOKEN` | ⚠️ | Hugging Face token (fallback) |
-| `UNSPLASH_ACCESS_KEY` | ⚠️ | Unsplash key (better backgrounds) |
+| Variable                        | Required | Description                       |
+| ------------------------------- | -------- | --------------------------------- |
+| `NEXT_PUBLIC_SUPABASE_URL`      | ✅       | Supabase project URL              |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅       | Supabase anonymous key            |
+| `GROQ_API_KEY`                  | ✅       | Groq API key for story/TTS        |
+| `HUGGINGFACE_API_TOKEN`         | ⚠️       | Hugging Face token (fallback)     |
+| `UNSPLASH_ACCESS_KEY`           | ⚠️       | Unsplash key (better backgrounds) |
 
 ---
 
@@ -565,12 +600,6 @@ Contributions are welcome! Please follow these steps:
 - Add comments for complex logic
 - Test your changes thoroughly
 - Update documentation if needed
-
----
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 

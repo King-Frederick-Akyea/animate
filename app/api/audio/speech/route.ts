@@ -5,17 +5,14 @@ const GROQ_API_URL = 'https://api.groq.com/openai/v1/audio/speech';
 const GROQ_MODEL = 'playai-tts';
 const DEFAULT_VOICE = 'Fritz-PlayAI';
 
-// Available voices (you can expand this list)
 const AVAILABLE_VOICES = [
   'Fritz-PlayAI',
-  // Add more voices as they become available
 ];
 
 export async function POST(request: NextRequest) {
   try {
     const { text, voice = DEFAULT_VOICE, response_format = 'wav' } = await request.json();
 
-    // Validate input
     if (!text || !text.trim()) {
       return NextResponse.json(
         { error: 'Text is required for audio generation' },

@@ -30,7 +30,6 @@ export class SceneVideoGenerator {
     try {
       console.log(`Generating video from ${scenes.length} scenes...`);
       
-      // First, process all scenes to get their actual durations
       const sceneData = await this.processScenesData(scenes);
       
       // Render each scene to images

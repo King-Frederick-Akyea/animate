@@ -523,7 +523,8 @@ export default function EditorPage() {
       return;
     }
 
-    const toastId = toast.loading(`Creating ${parsed.scenes.length} scenes...`);
+    const toastId = toast.loading(`Creating ${parsed.scenes.length} scenes with AI...`);
+    setGeneratedScenes(0);
     
     try {
       // Clear existing scenes
@@ -534,49 +535,107 @@ export default function EditorPage() {
       
       if (deleteError) throw deleteError;
 
-      // Create scenes
+      // Create scenes using the scene API for accurate, story-related scenes
       for (let i = 0; i < parsed.scenes.length; i++) {
         const scene = parsed.scenes[i];
         setGeneratedScenes(i + 1);
         
-        const backgroundUrl = await generateSceneBackground(scene, parsed);
-        
-        const sceneDescription = `
+        // Call the scene API to get AI-enhanced scene data
+        try {
+          const sceneResponse = await fetch('/api/ai/scene', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sceneNumber: scene.sceneNumber || i + 1,
+              sceneTitle: scene.title,
+              sceneLocation: scene.location,
+              sceneAction: scene.action,
+              sceneCharacters: Array.isArray(scene.characters) ? scene.characters : [],
+              dialogue: scene.dialogue || '',
+              storyTitle: parsed.title,
+              storyGenre: parsed.genre,
+              storyContext: parsed.summary,
+              allCharacters: parsed.characters.map(c => typeof c === 'string' ? c : c.name)
+            }),
+          });
+
+          if (!sceneResponse.ok) {
+            throw new Error(`Scene API error: ${sceneResponse.status}`);
+          }
+
+          const sceneData = await sceneResponse.json();
+          
+          // Use the AI-generated description from the scene API
+          const sceneDescription = sceneData.description || `
 Title: ${scene.title}
 Location: ${scene.location}
 Characters: ${scene.characters.join(', ')}
 Action: ${scene.action}
 Dialogue: ${scene.dialogue || 'No dialogue'}
-        `.trim();
+          `.trim();
 
-        const { data: newScene, error: sceneError } = await supabase
-          .from('scenes')
-          .insert([{
-            project_id: projectId,
-            scene_number: i + 1,
-            description: sceneDescription.substring(0, 200),
-            background_image_url: backgroundUrl,
-            duration: 5,
-            animations: [{ type: 'fadeIn', duration: 1 }],
-          }])
-          .select()
-          .single();
-        
-        if (sceneError) throw sceneError;
+          const { data: newScene, error: sceneError } = await supabase
+            .from('scenes')
+            .insert([{
+              project_id: projectId,
+              scene_number: scene.sceneNumber || i + 1,
+              description: sceneDescription.substring(0, 500), // Increased limit for AI descriptions
+              background_image_url: sceneData.backgroundUrl,
+              duration: 5,
+              animations: [{ type: 'fadeIn', duration: 1 }],
+            }])
+            .select()
+            .single();
+          
+          if (sceneError) throw sceneError;
 
-        await createCharactersForScene(parsed.title || 'Story', scene.characters, newScene.id);
-        
-        await new Promise(resolve => setTimeout(resolve, 300));
+          // Use suggested characters from scene API, or fallback to scene characters
+          const charactersToAdd = sceneData.suggestedCharacters && sceneData.suggestedCharacters.length > 0
+            ? sceneData.suggestedCharacters
+            : scene.characters;
+
+          await createCharactersForScene(parsed.title || 'Story', charactersToAdd, newScene.id);
+          
+          // Small delay to prevent rate limiting
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (sceneApiError: any) {
+          console.error(`Error creating scene ${i + 1}:`, sceneApiError);
+          // Fallback: create scene without AI enhancement
+          const fallbackDescription = `
+Title: ${scene.title}
+Location: ${scene.location}
+Characters: ${scene.characters.join(', ')}
+Action: ${scene.action}
+Dialogue: ${scene.dialogue || 'No dialogue'}
+          `.trim();
+
+          const { data: newScene, error: sceneError } = await supabase
+            .from('scenes')
+            .insert([{
+              project_id: projectId,
+              scene_number: scene.sceneNumber || i + 1,
+              description: fallbackDescription.substring(0, 500),
+              background_image_url: await generateSceneBackground(scene, parsed),
+              duration: 5,
+              animations: [{ type: 'fadeIn', duration: 1 }],
+            }])
+            .select()
+            .single();
+          
+          if (sceneError) throw sceneError;
+          await createCharactersForScene(parsed.title || 'Story', scene.characters, newScene.id);
+        }
       }
 
       await fetchProjectData();
       
       toast.dismiss(toastId);
+      toast.success(`Successfully created ${parsed.scenes.length} scenes with AI-enhanced descriptions!`);
       
     } catch (error: any) {
       toast.dismiss(toastId);
       console.error('Error creating scenes:', error);
-      toast.error('Failed to create all scenes');
+      toast.error(`Failed to create all scenes: ${error.message}`);
     }
   };
 
@@ -1166,7 +1225,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
       if (data.audio.startsWith('http')) {
         audioUrl = data.audio;
       } else {
-        // Assume it's base64
         const audioBlob = new Blob([
           Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))
         ], { type: 'audio/wav' });
@@ -1216,10 +1274,8 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
   }
 
   try {
-    // If the generatedAudioUrl is a data URL (base64), we need to extract the base64 part
     let audioData = generatedAudioUrl;
     
-    // If it's a blob URL, fetch it and convert to base64
     if (generatedAudioUrl.startsWith('blob:')) {
       try {
         const response = await fetch(generatedAudioUrl);
@@ -1242,7 +1298,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
       }
     }
     
-    // If it's already a data URL, store it directly
     const { error } = await supabase
       .from('scenes')
       .update({ 
@@ -1339,7 +1394,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
     );
   };
 
-  // Render Export Status - FIXED: Proper type checking
   const renderExportStatus = () => {
     if (exportProgress.status === 'idle') return null;
 
@@ -1881,7 +1935,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
 
                     {/* Draggable Characters */}
                     {activeScene.scene_characters?.map((sceneChar) => {
-                      // Use local state position if available, otherwise use database position
                       const position = characterPositions[sceneChar.character_id] || {
                         x: sceneChar.position_x,
                         y: sceneChar.position_y
@@ -1973,7 +2026,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
               </div>
 
               {/* Scene Controls */}
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
                   <label className="block text-sm text-gray-400 mb-2">Scene Description</label>
                   <textarea
@@ -2014,36 +2067,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                   <div className="text-center mt-3">
                     <span className="text-2xl font-bold">{activeScene?.duration || 5}</span>
                     <span className="text-gray-400 ml-1">seconds</span>
-                  </div>
-                </div>
-
-                <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-                  <label className="block text-sm text-gray-400 mb-2">Animation Effects</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button 
-                      className="py-2 bg-gray-900 rounded-lg hover:bg-gray-800 transition flex items-center justify-center space-x-2"
-                    >
-                      <Zap className="h-4 w-4" />
-                      <span>Fade In</span>
-                    </button>
-                    <button 
-                      className="py-2 bg-gray-900 rounded-lg hover:bg-gray-800 transition flex items-center justify-center space-x-2"
-                    >
-                      <Zap className="h-4 w-4" />
-                      <span>Zoom</span>
-                    </button>
-                    <button 
-                      className="py-2 bg-gray-900 rounded-lg hover:bg-gray-800 transition flex items-center justify-center space-x-2"
-                    >
-                      <Zap className="h-4 w-4" />
-                      <span>Pan</span>
-                    </button>
-                    <button 
-                      className="py-2 bg-gray-900 rounded-lg hover:bg-gray-800 transition flex items-center justify-center space-x-2"
-                    >
-                      <Zap className="h-4 w-4" />
-                      <span>Bounce</span>
-                    </button>
                   </div>
                 </div>
               </div>
@@ -2200,33 +2223,12 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
               <h3 className="font-bold mb-4">Quick Tools</h3>
               <div className="grid grid-cols-3 gap-3">
                 <button 
-                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
-                  title="Move Tool"
-                >
-                  <Move className="h-5 w-5 mb-1" />
-                  <span className="text-xs">Move</span>
-                </button>
-                <button 
-                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
-                  title="Text Tool"
-                >
-                  <Type className="h-5 w-5 mb-1" />
-                  <span className="text-xs">Text</span>
-                </button>
-                <button 
                   onClick={generateVoiceover}
                   className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
                   title="Audio Tool"
                 >
                   <Volume2 className="h-5 w-5 mb-1" />
                   <span className="text-xs">Audio</span>
-                </button>
-                <button 
-                  className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
-                  title="Effects"
-                >
-                  <Zap className="h-5 w-5 mb-1" />
-                  <span className="text-xs">Effects</span>
                 </button>
                 <button 
                   className="p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700 transition flex flex-col items-center"
@@ -2282,7 +2284,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
         </div>
       </div>
 
-      {/* Export Modal - FIXED: Proper type checking */}
       {showExportModal && (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
           <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-md">

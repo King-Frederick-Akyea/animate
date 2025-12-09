@@ -43,20 +43,17 @@ export default function PlayPage() {
 
   useEffect(() => {
     if (currentScene) {
-      // Get scene duration - use audio duration if available and longer
       const getSceneDuration = async () => {
-        let duration = currentScene.duration || 5; // Default 5 seconds
+        let duration = currentScene.duration || 5; 
         
         if (currentScene.audio_url) {
           try {
-            // Try to get audio duration
             const audio = new Audio();
             audio.src = currentScene.audio_url;
             
             await new Promise((resolve, reject) => {
               audio.onloadedmetadata = () => {
                 const audioDuration = audio.duration;
-                // Use the longer of scene duration or audio duration
                 duration = Math.max(duration, Math.ceil(audioDuration));
                 resolve(null);
               };
@@ -294,7 +291,6 @@ export default function PlayPage() {
               }}
             />
 
-            {/* Dark overlay for better character visibility */}
             <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent" />
 
             {/* Characters */}
@@ -517,7 +513,6 @@ export default function PlayPage() {
             </div>
           )}
 
-          {/* Compact Scene Selection (Always visible) */}
           <div className="mt-4">
             <div className="flex space-x-2 overflow-x-auto pb-2">
               {scenes.map((scene, index) => (

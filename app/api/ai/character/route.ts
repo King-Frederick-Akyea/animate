@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// All available DiceBear v9.x styles (camelCase)
 const DICEBEAR_STYLES = {
   adventurer: 'adventurer',
   'adventurer-neutral': 'adventurer-neutral',
@@ -30,7 +29,6 @@ const DICEBEAR_STYLES = {
 
 type DiceBearStyle = keyof typeof DICEBEAR_STYLES;
 
-// Map description to DiceBear style
 function getDiceBearStyle(description: string): DiceBearStyle {
   const descLower = description.toLowerCase();
   
@@ -70,11 +68,9 @@ function getDiceBearStyle(description: string): DiceBearStyle {
     return 'croodles';
   }
   
-  // Default to avataaars - most customizable for characters
   return 'avataaars';
 }
 
-// Generate DiceBear character with parameters based on description
 function generateDiceBearCharacter(characterName: string, description: string): {
   imageUrl: string;
   style: string;
@@ -84,13 +80,10 @@ function generateDiceBearCharacter(characterName: string, description: string): 
   const descLower = description.toLowerCase();
   const params = new URLSearchParams();
   
-  // Always set seed for consistent generation
   params.set('seed', characterName || `character-${Date.now()}`);
   
-  // Set format (SVG is default, but we specify it for clarity)
   params.set('format', 'svg');
   
-  // Add parameters based on style
   switch (style) {
     case 'avataaars':
       configureAvataaars(params, descLower);
@@ -120,16 +113,13 @@ function generateDiceBearCharacter(characterName: string, description: string): 
       configureOpenPeeps(params, descLower);
       break;
     default:
-      // For other styles, just use default parameters
       params.set('backgroundColor', getBackgroundColor(descLower));
       break;
   }
   
-  // Build the DiceBear URL
   const baseUrl = `https://api.dicebear.com/9.x/${style}/svg`;
   const imageUrl = `${baseUrl}?${params.toString()}`;
   
-  // Convert params to object
   const paramsObj: Record<string, string> = {};
   params.forEach((value, key) => {
     paramsObj[key] = value;
@@ -142,12 +132,9 @@ function generateDiceBearCharacter(characterName: string, description: string): 
   };
 }
 
-// Helper functions for each style
 function configureAvataaars(params: URLSearchParams, descLower: string): void {
-  // Background
   params.set('backgroundColor', getBackgroundColor(descLower));
   
-  // Hair
   if (descLower.includes('long hair')) {
     params.set('top', 'longHair');
   } else if (descLower.includes('short hair')) {

@@ -80,7 +80,6 @@ export function parseStoryText(storyText: string): ParsedStory {
       }
       i = j - 1;
     } else if (line.match(/^SCENE \d+:/)) {
-      // If we have a previous scene, save it first
       if (currentScene) {
         parsed.scenes.push(currentScene);
         currentScene = null;
@@ -118,7 +117,6 @@ export function parseStoryText(storyText: string): ParsedStory {
         i = j - 1;
       } else if (line.startsWith('DIALOGUE:')) {
         currentScene.dialogue = line.replace('DIALOGUE:', '').trim();
-        // Handle multi-line dialogue
         let j = i + 1;
         while (j < lines.length && !lines[j].trim().startsWith('SCENE') && 
                !lines[j].trim().startsWith('ACTION:') && !lines[j].trim().startsWith('LOCATION:') &&
@@ -131,7 +129,6 @@ export function parseStoryText(storyText: string): ParsedStory {
         }
         i = j - 1;
       } else if (line === '') {
-        // End of scene (empty line)
         if (currentScene && currentScene.location && currentScene.action) {
           parsed.scenes.push(currentScene);
           currentScene = null;
@@ -145,7 +142,6 @@ export function parseStoryText(storyText: string): ParsedStory {
     }
   }
 
-  // Add the last scene if exists
   if (currentScene) {
     parsed.scenes.push(currentScene);
   }
@@ -153,7 +149,6 @@ export function parseStoryText(storyText: string): ParsedStory {
   return parsed;
 }
 
-// Simple fallback parser for non-structured stories
 export function parseSimpleStory(storyText: string): ParsedStory {
   const lines = storyText.split('\n').filter(line => line.trim());
   
@@ -197,7 +192,6 @@ export function parseSimpleStory(storyText: string): ParsedStory {
     }
   }
 
-  // Add remaining content as last scene
   if (currentContent && sceneCount < 5) {
     parsed.scenes.push({
       sceneNumber: sceneCount + 1,
@@ -209,7 +203,6 @@ export function parseSimpleStory(storyText: string): ParsedStory {
     });
   }
 
-  // If no scenes were found, create default ones
   if (parsed.scenes.length === 0) {
     parsed.scenes = [
       {

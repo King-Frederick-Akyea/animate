@@ -1,4 +1,3 @@
-// app/utils/simpleVideoGenerator.ts
 export class SimpleVideoGenerator {
   static async generateVideo(projectTitle: string, scenesCount: number): Promise<Blob> {
     // Create a canvas and generate frames

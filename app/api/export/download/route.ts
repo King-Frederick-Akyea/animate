@@ -4,13 +4,9 @@ import { supabase } from '@/lib/supabase';
 import path from 'path';
 import { promises as fs } from 'fs';
 
-// For now, we'll create a mock video. In production, you'd generate this dynamically
 const createMockVideo = async (projectId: string, title: string) => {
-  // This is a placeholder. In reality, you'd use a video generation library
-  // like ffmpeg.wasm, @remotion/renderer, or a video processing service
   console.log(`Generating video for project ${projectId}: ${title}`);
   
-  // Return a promise that resolves after a short delay (simulating video generation)
   return new Promise<string>((resolve) => {
     setTimeout(() => {
       resolve(`Video generated for project ${projectId}`);
@@ -63,8 +59,6 @@ export async function GET(request: NextRequest) {
       console.error('Error fetching scenes:', scenesError);
     }
 
-    // Create a simple mock video file
-    // In a real implementation, you'd generate an actual video file here
     const videoContent = `
       Video Metadata:
       Title: ${project.title}
@@ -82,11 +76,9 @@ export async function GET(request: NextRequest) {
       4. Or a backend service like FFmpeg, Remotion, or a video processing API
     `;
 
-    // Create a Blob with video content
     const blob = new Blob([videoContent], { type: 'text/plain' });
     const buffer = Buffer.from(await blob.arrayBuffer());
 
-    // Return the file as a downloadable response
     return new NextResponse(buffer, {
       status: 200,
       headers: {

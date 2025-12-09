@@ -9,7 +9,7 @@ export default function HomePage() {
         <div className="flex justify-between items-center">
           <div className="flex items-center space-x-2">
             <Film className="h-8 w-8 text-purple-600" />
-            <span className="text-2xl font-bold text-gray-900">CartoonCreator</span>
+            <span className="text-2xl font-bold text-gray-900">Animate</span>
           </div>
           <div className="flex items-center space-x-4">
             <Link 
@@ -45,9 +45,6 @@ export default function HomePage() {
             Start Creating
             <ArrowRight className="ml-2 h-5 w-5" />
           </Link>
-          <button className="px-8 py-3 border-2 border-purple-600 text-purple-600 rounded-full text-lg hover:bg-purple-50 transition">
-            Watch Demo
-          </button>
         </div>
       </section>
 
@@ -90,7 +87,7 @@ export default function HomePage() {
       {/* Footer */}
       <footer className="bg-gray-900 text-white py-8 mt-16">
         <div className="container mx-auto px-6 text-center">
-          <p>© 2024 CartoonCreator. Create magical animations effortlessly.</p>
+          <p>© 2025 Animate. Create magical animations effortlessly.</p>
         </div>
       </footer>
     </div>
