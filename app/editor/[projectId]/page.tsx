@@ -2444,35 +2444,6 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                 </button>
               </div>
 
-              {/* Select Dialogue from Story or Scenes */}
-              {(parsedStory?.scenes && parsedStory.scenes.length > 0 || scenes.length > 0) && (
-                <div className="mb-6 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
-                  <h3 className="font-semibold mb-3">Select Dialogue from Scenes</h3>
-                  <div className="space-y-2 max-h-40 overflow-y-auto">
-                    {scenes.map((dbScene) => {
-                      const parsedScene = parsedStory?.scenes?.find(s => s.sceneNumber === dbScene.scene_number);
-                      const dialogue = parsedScene?.dialogue || 
-                        (dbScene.description?.match(/Dialogue:\s*(.+)/i)?.[1] || '');
-                      
-                      return (
-                        <button
-                          key={dbScene.id}
-                          onClick={() => selectDialogueFromScene(dbScene.scene_number - 1)}
-                          className="w-full text-left p-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition text-sm"
-                        >
-                          <div className="font-medium">Scene {dbScene.scene_number}: {parsedScene?.title || dbScene.description?.substring(0, 30) || 'Untitled'}</div>
-                          {dialogue && (
-                            <div className="text-gray-400 text-xs mt-1 truncate">
-                              {dialogue.replace(/^["']|["']$/g, '').substring(0, 60)}...
-                            </div>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
               {/* Text Input */}
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-2">
@@ -2481,7 +2452,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                 <textarea
                   value={audioText}
                   onChange={(e) => setAudioText(e.target.value)}
-                  placeholder="Enter text to generate audio, or select dialogue from story above..."
+                  placeholder="Enter text to generate audio..."
                   className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
                   maxLength={5000}
                 />

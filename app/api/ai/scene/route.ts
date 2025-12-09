@@ -190,18 +190,18 @@ export async function POST(request: NextRequest) {
     console.error('Scene generation error:', error);
     
     // Fallback response
-    const fallbackDescription = sceneTitle && sceneLocation && sceneAction
-      ? `Scene ${body.sceneNumber || 1}: ${sceneTitle}\nLocation: ${sceneLocation}\nAction: ${sceneAction}`
-      : `Scene ${body.sceneNumber || 1}: A beautiful cartoon scene`;
+    // const fallbackDescription = sceneTitle && sceneLocation && sceneAction
+    //   ? `Scene ${body.sceneNumber || 1}: ${sceneTitle}\nLocation: ${sceneLocation}\nAction: ${sceneAction}`
+    //   : `Scene ${body.sceneNumber || 1}: A beautiful cartoon scene`;
     
-    return NextResponse.json({
-      success: false,
-      description: fallbackDescription,
-      backgroundUrl: `https://picsum.photos/800/600?random=${Date.now()}`,
-      suggestedCharacters: ['Hero', 'Sidekick', 'Villain'],
-      sceneTitle: body.sceneTitle || `Scene ${body.sceneNumber || 1}`,
-      sceneLocation: body.sceneLocation || '',
-      sceneAction: body.sceneAction || '',
-    });
+    // return NextResponse.json({
+    //   success: false,
+    //   description: fallbackDescription,
+    //   backgroundUrl: `https://picsum.photos/800/600?random=${Date.now()}`,
+    //   suggestedCharacters: ['Hero', 'Sidekick', 'Villain'],
+    //   sceneTitle: body.sceneTitle || `Scene ${body.sceneNumber || 1}`,
+    //   sceneLocation: body.sceneLocation || '',
+    //   sceneAction: body.sceneAction || '',
+    // });
   }
 }
