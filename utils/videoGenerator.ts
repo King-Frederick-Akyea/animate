@@ -30,6 +30,9 @@ export class SceneVideoGenerator {
     try {
       console.log(`Generating video from ${scenes.length} scenes...`);
       
+      // First, process all scenes to get their actual durations
+      const sceneData = await this.processScenesData(scenes);
+      
       // Render each scene to images
       const sceneFrames = await this.renderScenesToFrames(scenes);
       
@@ -44,73 +47,53 @@ export class SceneVideoGenerator {
         await this.ffmpeg.writeFile(filename, frameData);
       }
 
-      // Collect audio files from scenes
-      const audioFiles: { data: Uint8Array, duration: number, sceneIndex: number }[] = [];
-      let hasAudio = false;
-      
-      for (let i = 0; i < scenes.length; i++) {
-        const scene = scenes[i];
-        if (scene.audio_url) {
-          try {
-            console.log(`Scene ${i + 1} has audio, processing...`);
-            const audioData = await this.extractAudioFromScene(scene, i);
-            if (audioData) {
-              audioFiles.push({
-                data: audioData.audioBuffer,
-                duration: audioData.duration || 3, // Default 3 seconds if duration unknown
-                sceneIndex: i
-              });
-              hasAudio = true;
-            }
-          } catch (error) {
-            console.warn(`Failed to process audio for scene ${i + 1}:`, error);
-          }
-        }
-      }
-
-      // Create video from frames
-      const fps = 30;
-      const durationPerScene = 3; // Default seconds per scene
+      // Create video from frames using ACTUAL durations
       let concatText = '';
       
-      // Create frames.txt for concat demuxer
+      // Create frames.txt for concat demuxer using actual durations
       for (let i = 0; i < sceneFrames.length; i++) {
         const filename = `frame${i.toString().padStart(4, '0')}.png`;
+        const duration = sceneData[i].duration;
         concatText += `file '${filename}'\n`;
-        concatText += `duration ${durationPerScene}\n`;
+        concatText += `duration ${duration}\n`;
       }
       
       await this.ffmpeg.writeFile('frames.txt', new TextEncoder().encode(concatText));
       
       let command: string[];
+      const hasAudio = sceneData.some(scene => scene.hasAudio);
       
       if (hasAudio) {
         console.log('Creating video with audio...');
         
         // Write audio files to FFmpeg file system
-        for (let i = 0; i < audioFiles.length; i++) {
-          const audioFile = audioFiles[i];
-          const audioFilename = `audio${i}.wav`;
-          await this.ffmpeg.writeFile(audioFilename, audioFile.data);
+        for (let i = 0; i < sceneData.length; i++) {
+          const scene = sceneData[i];
+          if (scene.audioBuffer) {
+            const audioFilename = `audio${i}.wav`;
+            await this.ffmpeg.writeFile(audioFilename, scene.audioBuffer);
+          }
         }
         
-        // Create audio concat file
+        // Create audio concat file with proper timing
         let audioConcatText = '';
         let currentTime = 0;
         
-        for (let i = 0; i < scenes.length; i++) {
-          const audioFile = audioFiles.find(af => af.sceneIndex === i);
-          if (audioFile) {
-            audioConcatText += `file 'audio${audioFiles.indexOf(audioFile)}.wav'\n`;
-            audioConcatText += `inpoint ${currentTime}\n`;
-            audioConcatText += `outpoint ${currentTime + durationPerScene}\n`;
+        for (let i = 0; i < sceneData.length; i++) {
+          const scene = sceneData[i];
+          const duration = scene.duration;
+          
+          if (scene.audioBuffer) {
+            // Scene has audio
+            audioConcatText += `file 'audio${i}.wav'\n`;
+            audioConcatText += `inpoint 0\n`;
+            audioConcatText += `outpoint ${duration}\n`;
           } else {
-            // Add silence for scenes without audio
+            // Scene without audio - add silence
             audioConcatText += `file 'anullsrc=channel_layout=stereo:sample_rate=44100'\n`;
             audioConcatText += `inpoint 0\n`;
-            audioConcatText += `outpoint ${durationPerScene}\n`;
+            audioConcatText += `outpoint ${duration}\n`;
           }
-          currentTime += durationPerScene;
         }
         
         await this.ffmpeg.writeFile('audio_concat.txt', new TextEncoder().encode(audioConcatText));
@@ -129,7 +112,7 @@ export class SceneVideoGenerator {
           '-pix_fmt', 'yuv420p',
           '-c:a', 'aac',
           '-b:a', '128k',
-          '-shortest',
+          '-shortest', // Stop when the shortest stream ends
           '-movflags', '+faststart',
           'output.mp4'
         ];
@@ -161,7 +144,10 @@ export class SceneVideoGenerator {
       const blob = new Blob([arrayBuffer], { type: 'video/mp4' });
       
       // Clean up
-      await this.cleanupFiles(sceneFrames.length, audioFiles.length);
+      await this.cleanupFiles(sceneFrames.length, sceneData.length);
+      
+      console.log(`Video generated successfully with ${sceneData.length} scenes`);
+      console.log('Scene durations:', sceneData.map((s, i) => `Scene ${i + 1}: ${s.duration}s`));
       
       return blob;
       
@@ -171,6 +157,50 @@ export class SceneVideoGenerator {
       // Fallback: create simple video without audio
       return await this.createSimpleSceneVideo(scenes, projectTitle);
     }
+  }
+
+  private async processScenesData(scenes: Scene[]): Promise<
+    { duration: number; hasAudio: boolean; audioBuffer?: Uint8Array }[]
+  > {
+    const sceneData = [];
+    
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
+      
+      // Start with scene duration from database
+      let duration = scene.duration || 5;
+      let hasAudio = false;
+      let audioBuffer: Uint8Array | undefined;
+      
+      // Check for audio
+      if (scene.audio_url) {
+        try {
+          const audioData = await this.extractAudioFromScene(scene, i);
+          if (audioData) {
+            hasAudio = true;
+            audioBuffer = audioData.audioBuffer;
+            
+            // Use audio duration if it's longer than scene duration
+            const audioDuration = audioData.duration;
+            if (audioDuration > duration) {
+              duration = Math.ceil(audioDuration);
+              console.log(`Scene ${i + 1}: Audio (${audioDuration}s) is longer than scene duration (${scene.duration}s), using ${duration}s`);
+            } else {
+              console.log(`Scene ${i + 1}: Using scene duration ${duration}s (audio: ${audioDuration}s)`);
+            }
+          }
+        } catch (error) {
+          console.warn(`Failed to process audio for scene ${i + 1}:`, error);
+        }
+      }
+      
+      // Ensure minimum duration of 1 second
+      if (duration < 1) duration = 1;
+      
+      sceneData.push({ duration, hasAudio, audioBuffer });
+    }
+    
+    return sceneData;
   }
 
   private async extractAudioFromScene(scene: Scene, sceneIndex: number): Promise<{ audioBuffer: Uint8Array, duration: number } | null> {
@@ -201,8 +231,8 @@ export class SceneVideoGenerator {
       // Convert to Uint8Array
       const audioBuffer = new Uint8Array(audioData);
       
-      // Try to get duration from the audio
-      let duration = scene.duration || 3; // Use scene duration or default
+      // Get actual audio duration
+      let duration = scene.duration || 5;
       
       try {
         // Create an audio element to get duration
@@ -219,6 +249,8 @@ export class SceneVideoGenerator {
           audio.onerror = reject;
           audio.src = audioUrl;
         });
+        
+        console.log(`Scene ${sceneIndex + 1} audio duration: ${duration.toFixed(2)}s`);
       } catch (error) {
         console.warn('Could not determine audio duration:', error);
       }
@@ -232,12 +264,17 @@ export class SceneVideoGenerator {
   }
 
   private base64ToArrayBuffer(base64: string): ArrayBuffer {
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+    try {
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return bytes.buffer;
+    } catch (error) {
+      console.error('Error decoding base64 audio:', error);
+      return new ArrayBuffer(0);
     }
-    return bytes.buffer;
   }
 
   private async renderScenesToFrames(scenes: Scene[]): Promise<Uint8Array[]> {
@@ -297,6 +334,14 @@ export class SceneVideoGenerator {
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText('♪', canvas.width - 30, 30);
+          
+          // Add duration info for audio scenes
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(canvas.width - 100, 50, 90, 25);
+          ctx.fillStyle = 'white';
+          ctx.font = '12px Arial';
+          ctx.textAlign = 'right';
+          ctx.fillText(`${scene.duration || '?'}s`, canvas.width - 15, 67);
         }
         
         // Convert canvas to PNG
@@ -401,7 +446,7 @@ export class SceneVideoGenerator {
         } else {
           resolve(new Uint8Array());
         }
-      }, 'image/png', 0.9); // Use compression for smaller files
+      }, 'image/png', 0.9);
     });
   }
 

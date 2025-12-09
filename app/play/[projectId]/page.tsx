@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { Play, Pause, SkipBack, SkipForward, Volume2, Home, VolumeX } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, Home, VolumeX, ListVideo } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Scene } from '@/lib/type';
 
@@ -19,13 +19,21 @@ export default function PlayPage() {
   const [volume, setVolume] = useState(1);
   const [loading, setLoading] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
+  const [playMode, setPlayMode] = useState<'single' | 'all'>('all'); // New state for play mode
+  const [showScenesList, setShowScenesList] = useState(false); // Toggle scene list
   
   const audioRef = useRef<HTMLAudioElement>(null);
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const sceneDurationRef = useRef<number>(0);
+  const currentSceneRef = useRef<Scene | null>(null);
 
   // Define currentScene after scenes are loaded
   const currentScene = scenes[currentSceneIndex];
+
+  // Update ref when currentScene changes
+  useEffect(() => {
+    currentSceneRef.current = currentScene;
+  }, [currentScene]);
 
   useEffect(() => {
     if (projectId) {
@@ -34,13 +42,41 @@ export default function PlayPage() {
   }, [projectId]);
 
   useEffect(() => {
-    // This useEffect handles the playback logic
     if (currentScene) {
-      sceneDurationRef.current = currentScene.duration;
+      // Get scene duration - use audio duration if available and longer
+      const getSceneDuration = async () => {
+        let duration = currentScene.duration || 5; // Default 5 seconds
+        
+        if (currentScene.audio_url) {
+          try {
+            // Try to get audio duration
+            const audio = new Audio();
+            audio.src = currentScene.audio_url;
+            
+            await new Promise((resolve, reject) => {
+              audio.onloadedmetadata = () => {
+                const audioDuration = audio.duration;
+                // Use the longer of scene duration or audio duration
+                duration = Math.max(duration, Math.ceil(audioDuration));
+                resolve(null);
+              };
+              audio.onerror = reject;
+            });
+          } catch (error) {
+            console.warn('Could not load audio metadata:', error);
+          }
+        }
+        
+        sceneDurationRef.current = duration;
+        console.log(`Scene ${currentSceneIndex + 1} duration: ${duration}s`);
+      };
+      
+      getSceneDuration();
       
       if (isPlaying) {
         startProgressTimer();
         if (audioRef.current && currentScene.audio_url) {
+          audioRef.current.src = currentScene.audio_url;
           audioRef.current.play().catch(console.error);
         }
       } else {
@@ -54,7 +90,7 @@ export default function PlayPage() {
     return () => {
       stopProgressTimer();
     };
-  }, [isPlaying, currentSceneIndex, currentScene]); // currentScene is now properly defined
+  }, [isPlaying, currentSceneIndex, currentScene]);
 
   const fetchScenes = async () => {
     try {
@@ -115,11 +151,20 @@ export default function PlayPage() {
   const handleNextScene = () => {
     stopProgressTimer();
     setProgress(0);
+    
     if (currentSceneIndex < scenes.length - 1) {
       setCurrentSceneIndex(prev => prev + 1);
+      if (playMode === 'all') {
+        // Auto-play next scene if in "all" mode
+        setIsPlaying(true);
+      }
     } else {
       setIsPlaying(false);
-      toast.success('Animation completed!');
+      if (playMode === 'all') {
+        toast.success('Animation completed!');
+        // Optionally loop back to start
+        setCurrentSceneIndex(0);
+      }
     }
   };
 
@@ -128,6 +173,9 @@ export default function PlayPage() {
     setProgress(0);
     if (currentSceneIndex > 0) {
       setCurrentSceneIndex(prev => prev - 1);
+      if (playMode === 'all') {
+        setIsPlaying(true);
+      }
     }
   };
 
@@ -161,6 +209,20 @@ export default function PlayPage() {
     setCurrentSceneIndex(index);
     setProgress(0);
     setIsPlaying(false);
+    setPlayMode('single'); // Switch to single scene mode when manually selecting
+  };
+
+  const togglePlayMode = () => {
+    const newMode = playMode === 'all' ? 'single' : 'all';
+    setPlayMode(newMode);
+    toast.success(`Playing ${newMode === 'all' ? 'all scenes' : 'single scene'}`);
+  };
+
+  const playAllScenes = () => {
+    setPlayMode('all');
+    setIsPlaying(true);
+    setCurrentSceneIndex(0);
+    toast.success('Playing all scenes!');
   };
 
   // Handle audio ended event
@@ -174,6 +236,16 @@ export default function PlayPage() {
   const handleAudioError = (error: any) => {
     console.error('Audio error:', error);
     toast.error('Failed to play audio');
+  };
+
+  // Handle audio time update to sync with progress
+  const handleAudioTimeUpdate = () => {
+    if (audioRef.current && currentSceneRef.current?.audio_url) {
+      const currentTime = audioRef.current.currentTime;
+      const duration = audioRef.current.duration || sceneDurationRef.current;
+      const calculatedProgress = (currentTime / duration) * 100;
+      setProgress(Math.min(calculatedProgress, 100));
+    }
   };
 
   if (loading) {
@@ -259,6 +331,9 @@ export default function PlayPage() {
               {currentScene.audio_url && (
                 <span className="ml-2 text-blue-400">🎵</span>
               )}
+              <span className="ml-2 text-xs px-2 py-1 rounded bg-purple-600">
+                {playMode === 'all' ? 'All Scenes' : 'Single Scene'}
+              </span>
             </div>
 
             {/* Scene Description */}
@@ -278,7 +353,7 @@ export default function PlayPage() {
 
             {/* Time Indicator */}
             <div className="absolute top-12 right-4 bg-black/70 px-3 py-1 rounded-full text-sm">
-              {Math.floor((progress / 100) * currentScene.duration)}s / {currentScene.duration}s
+              {Math.floor((progress / 100) * sceneDurationRef.current)}s / {sceneDurationRef.current}s
             </div>
 
             {/* Audio Element */}
@@ -288,7 +363,8 @@ export default function PlayPage() {
                 src={currentScene.audio_url}
                 onEnded={handleAudioEnded}
                 onError={handleAudioError}
-                preload="auto"
+                onTimeUpdate={handleAudioTimeUpdate}
+                preload="metadata"
               />
             )}
           </>
@@ -313,6 +389,26 @@ export default function PlayPage() {
                 className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
               >
                 Edit Project
+              </button>
+              
+              <button
+                onClick={togglePlayMode}
+                className={`px-4 py-2 rounded-lg transition ${
+                  playMode === 'all' 
+                    ? 'bg-gradient-to-r from-purple-600 to-pink-600' 
+                    : 'bg-gray-800 hover:bg-gray-700'
+                }`}
+                title={playMode === 'all' ? 'Switch to single scene' : 'Play all scenes'}
+              >
+                {playMode === 'all' ? 'Single Scene' : 'All Scenes'}
+              </button>
+              
+              <button
+                onClick={() => setShowScenesList(!showScenesList)}
+                className="p-3 hover:bg-gray-800 rounded-full transition bg-black/50 backdrop-blur-sm"
+                title="Toggle Scenes List"
+              >
+                <ListVideo className="h-6 w-6" />
               </button>
             </div>
 
@@ -374,30 +470,68 @@ export default function PlayPage() {
             </div>
           </div>
 
-          {/* Scene Selection */}
-          <div className="mt-4">
-            <div className="text-sm text-gray-400 mb-2">
-              Select Scene ({currentSceneIndex + 1} of {scenes.length})
+          {/* Play All Button */}
+          {playMode === 'single' && (
+            <div className="mb-4 text-center">
+              <button
+                onClick={playAllScenes}
+                className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg hover:opacity-90 transition font-medium"
+              >
+                Play All Scenes
+              </button>
             </div>
+          )}
+
+          {/* Scene Selection */}
+          {showScenesList && (
+            <div className="mt-4">
+              <div className="text-sm text-gray-400 mb-2">
+                Select Scene ({currentSceneIndex + 1} of {scenes.length})
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2 max-h-48 overflow-y-auto pb-2">
+                {scenes.map((scene, index) => (
+                  <button
+                    key={scene.id}
+                    onClick={() => handleSceneSelect(index)}
+                    className={`p-3 rounded-lg transition flex flex-col items-center ${
+                      index === currentSceneIndex
+                        ? 'bg-gradient-to-r from-purple-600 to-pink-600'
+                        : 'bg-gray-800 hover:bg-gray-700'
+                    }`}
+                  >
+                    <div className="font-medium">Scene {scene.scene_number}</div>
+                    <div className="text-xs text-gray-300 truncate mt-1 text-center w-full">
+                      {scene.description?.substring(0, 20) || 'No description'}
+                    </div>
+                    <div className="flex items-center justify-between mt-2 text-xs w-full">
+                      <span>{scene.duration}s</span>
+                      {scene.audio_url && (
+                        <span className="text-blue-400">🎵</span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Compact Scene Selection (Always visible) */}
+          <div className="mt-4">
             <div className="flex space-x-2 overflow-x-auto pb-2">
               {scenes.map((scene, index) => (
                 <button
                   key={scene.id}
                   onClick={() => handleSceneSelect(index)}
-                  className={`px-4 py-3 rounded-lg transition flex-shrink-0 min-w-[120px] ${
+                  className={`px-3 py-2 rounded-lg transition flex-shrink-0 ${
                     index === currentSceneIndex
                       ? 'bg-gradient-to-r from-purple-600 to-pink-600'
                       : 'bg-gray-800 hover:bg-gray-700'
                   }`}
                 >
-                  <div className="font-medium">Scene {scene.scene_number}</div>
-                  <div className="text-xs text-gray-300 truncate mt-1">
-                    {scene.description?.substring(0, 20) || 'No description'}
-                  </div>
-                  <div className="flex items-center justify-between mt-2 text-xs">
-                    <span>{scene.duration}s</span>
+                  <div className="flex items-center space-x-2">
+                    <span className="font-medium">S{scene.scene_number}</span>
                     {scene.audio_url && (
-                      <span className="text-blue-400">🎵</span>
+                      <span className="text-blue-400">♪</span>
                     )}
                   </div>
                 </button>
@@ -407,7 +541,8 @@ export default function PlayPage() {
 
           {/* Playback Status */}
           <div className="mt-4 text-center text-sm text-gray-400">
-            {isPlaying ? 'Playing' : 'Paused'} • Scene {currentSceneIndex + 1} of {scenes.length}
+            {isPlaying ? 'Playing' : 'Paused'} • Scene {currentSceneIndex + 1} of {scenes.length} • 
+            <span className="ml-2">{playMode === 'all' ? 'All scenes mode' : 'Single scene mode'}</span>
           </div>
         </div>
       </div>
