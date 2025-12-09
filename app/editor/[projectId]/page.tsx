@@ -2354,7 +2354,7 @@ Dialogue: ${scene.dialogue || 'No dialogue'}
                   {/* Export Button */}
                   <button
                     onClick={exportVideo}
-                    disabled={scenes.length === 0 || exportProgress.status === 'exporting'}
+                    disabled={scenes.length === 0 }
                     className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center font-medium"
                   >
                     <Video className="h-5 w-5 mr-2" />

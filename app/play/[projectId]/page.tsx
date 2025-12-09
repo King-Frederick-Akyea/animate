@@ -288,7 +288,6 @@ export default function PlayPage() {
                 src={currentScene.audio_url}
                 onEnded={handleAudioEnded}
                 onError={handleAudioError}
-                volume={isMuted ? 0 : volume}
                 preload="auto"
               />
             )}

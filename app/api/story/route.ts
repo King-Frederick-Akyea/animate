@@ -49,7 +49,7 @@ const checkRateLimit = (ip: string) => {
 };
 
 export async function POST(request: NextRequest) {
-  const clientIp = request.headers.get('x-forwarded-for') || request.ip || 'unknown';
+  const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
   
   try {
     // Validate request

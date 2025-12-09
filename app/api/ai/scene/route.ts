@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
     
     // Return mock data with preserved sceneNumber
     return NextResponse.json({
-      description: `Scene ${body.sceneNumber || 1}: A beautiful cartoon scene`,
+      description: `Scene ${1}: A beautiful cartoon scene`,
       backgroundUrl: `https://picsum.photos/800/600?random=${Date.now()}`,
       suggestedCharacters: ['Hero', 'Sidekick', 'Villain'],
     });
